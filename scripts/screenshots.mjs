@@ -1,6 +1,6 @@
 // 无头浏览器冒烟测试 + 截图：node scripts/screenshots.mjs [url]
 import puppeteer from 'puppeteer-core';
-const URL = process.argv[2] || 'http://localhost:5173/';
+const URL = process.argv[2] || 'http://localhost:5173/golf-card-game/';
 const OUT = new globalThis.URL('../screenshots/', import.meta.url).pathname;
 const errors = [];
 const browser = await puppeteer.launch({

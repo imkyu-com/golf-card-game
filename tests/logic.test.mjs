@@ -4,7 +4,7 @@ import * as R from '../src/game/rules.js';
 import * as AI from '../src/game/ai.js';
 import { mulberry32, hashSeed } from '../src/game/rng.js';
 import { LEVELS, starsFor } from '../src/game/levels.js';
-import { encodeChallenge, decodeChallenge } from '../src/social/share.js';
+import { encodeChallenge, decodeChallenge, challengeUrl, pageBase } from '../src/social/share.js';
 
 const c = (rank, suit = 'S') => ({ id: Math.random(), rank, suit });
 const grid = (ranks) => ranks.map((r) => ({ card: c(r), up: true }));
@@ -115,4 +115,21 @@ test('challenge link roundtrip (unicode)', () => {
   const ch = { v: 1, seed: 4294967295, level: 7, score: -3, name: '肯尼 Kenny', avatar: '🦄', stars: 2 };
   assert.deepEqual(decodeChallenge(encodeChallenge(ch)), ch);
   assert.equal(decodeChallenge('garbage!!'), null);
+});
+
+test('challenge url uses the page origin and path', () => {
+  const ch = { v: 1, seed: 42, level: 3, score: 11, name: '肯尼', avatar: '⛳', stars: 2 };
+  const pages = { origin: 'https://kenysai.github.io', pathname: '/golf-card-game/' };
+  assert.equal(pageBase(pages), 'https://kenysai.github.io/golf-card-game/');
+  assert.equal(
+    pageBase({ origin: 'https://kenysai.github.io', pathname: '/golf-card-game/index.html' }),
+    'https://kenysai.github.io/golf-card-game/',
+  );
+  assert.equal(
+    pageBase({ origin: 'https://example.com', pathname: '/golf-card-game' }),
+    'https://example.com/golf-card-game/',
+  );
+  const url = challengeUrl(ch, pageBase(pages));
+  assert.equal(url.startsWith('https://kenysai.github.io/golf-card-game/#c='), true);
+  assert.deepEqual(decodeChallenge(url.slice(url.indexOf('#c=') + 3)), ch);
 });

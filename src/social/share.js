@@ -23,8 +23,22 @@ export function decodeChallenge(code) {
   } catch { return null; }
 }
 
-export function challengeUrl(ch, base = location.origin + location.pathname) {
-  return `${base}#c=${encodeChallenge(ch)}`;
+// 当前页面所在目录（origin + path）。Pages 项目站挂在 /golf-card-game/ 下，
+// 挑战链接必须带上这段路径，不能只使用 origin。
+export function pageBase(loc) {
+  const here = loc ?? (typeof globalThis.location === 'object' ? globalThis.location : undefined);
+  if (!here || typeof here.origin !== 'string' || !here.origin) {
+    throw new TypeError('page location is required to build a challenge link');
+  }
+  let path = String(here.pathname || '/');
+  path = path.replace(/index\.html$/i, '');
+  if (!path.endsWith('/')) path += '/';
+  return here.origin + path;
+}
+
+export function challengeUrl(ch, base) {
+  const root = base ?? pageBase();
+  return `${root}#c=${encodeChallenge(ch)}`;
 }
 
 export function readChallengeFromUrl() {

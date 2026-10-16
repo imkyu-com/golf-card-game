@@ -5,12 +5,18 @@ Three.js 写的 3D 网页版 6 张牌 Golf 纸牌：有闯关、AI 对手和本�
 ## 运行
 ```bash
 npm install
-npm run dev          # 开发服务器 http://localhost:5173（vite.config.js 已绑定 0.0.0.0）
-npm run build        # 产物输出到 dist/（base 为 './'，可以放到任意静态目录）
-npm run preview      # 本地预览 dist/，端口 5173
+npm run dev          # 开发服务器 http://localhost:5173/golf-card-game/（vite.config.js 已绑定 0.0.0.0）
+npm run build        # 产物输出到 dist/（base 为 '/golf-card-game/'，对应 GitHub Pages 项目站）
+npm run preview      # 本地预览 dist/，端口 5173，路径同样是 /golf-card-game/
 npm test             # Node 跑规则、计分、AI 对局模拟和挑战链接编解码的测试
 npm run screenshots  # 无头 Chrome 冒烟测试 + 截图（需要先 preview，并安装 /usr/bin/google-chrome）
 ```
+
+## GitHub Pages
+
+推送到 `main` 后，`.github/workflows/pages.yml` 会执行 `npm ci` 和 `npm run build`，再用 GitHub Actions 发布到 <https://kenysai.github.io/golf-card-game/>。
+
+挑战链接用当前页面的 origin 和目录路径（`pageBase`），所以在 Pages 子路径下生成的 `#c=` 链接仍然打开这个站点，而不是用户主页根路径。
 
 ## 目录
 ```
