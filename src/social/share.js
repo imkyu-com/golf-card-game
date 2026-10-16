@@ -23,8 +23,8 @@ export function decodeChallenge(code) {
   } catch { return null; }
 }
 
-// 当前页面所在目录（origin + path）。Pages 项目站挂在 /golf-card-game/ 下，
-// 挑战链接必须带上这段路径，不能只使用 origin。
+// 当前页面所在目录（origin + path）。自定义域名挂在根路径，
+// 挑战链接仍按实际页面地址拼接，不能写死 base，也不能只使用 origin。
 export function pageBase(loc) {
   const here = loc ?? (typeof globalThis.location === 'object' ? globalThis.location : undefined);
   if (!here || typeof here.origin !== 'string' || !here.origin) {

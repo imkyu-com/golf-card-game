@@ -119,6 +119,16 @@ test('challenge link roundtrip (unicode)', () => {
 
 test('challenge url uses the page origin and path', () => {
   const ch = { v: 1, seed: 42, level: 3, score: 11, name: '肯尼', avatar: '⛳', stars: 2 };
+  const custom = { origin: 'https://golf-card-game.app.imkyu.com', pathname: '/' };
+  assert.equal(pageBase(custom), 'https://golf-card-game.app.imkyu.com/');
+  assert.equal(
+    pageBase({ origin: 'https://golf-card-game.app.imkyu.com', pathname: '/index.html' }),
+    'https://golf-card-game.app.imkyu.com/',
+  );
+  const rootUrl = challengeUrl(ch, pageBase(custom));
+  assert.equal(rootUrl.startsWith('https://golf-card-game.app.imkyu.com/#c='), true);
+  assert.deepEqual(decodeChallenge(rootUrl.slice(rootUrl.indexOf('#c=') + 3)), ch);
+
   const pages = { origin: 'https://kenysai.github.io', pathname: '/golf-card-game/' };
   assert.equal(pageBase(pages), 'https://kenysai.github.io/golf-card-game/');
   assert.equal(
