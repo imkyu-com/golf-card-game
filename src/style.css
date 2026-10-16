@@ -84,7 +84,8 @@ table.score { width: 100%; border-collapse: collapse; margin: 6px 0 14px; }
 table.score td, table.score th { padding: 8px 6px; text-align: center; border-bottom: 1px solid rgba(255,255,255,.08); }
 table.score th { color: #9fe0b8; font-weight: 600; font-size: 14px; }
 table.score tr.best td { color: #ffd166; font-weight: 700; }
-table.score tr.me td:first-child { text-decoration: underline; text-decoration-color: #ffd166; }
+table.score tr.me .who { text-decoration: underline; text-decoration-color: #ffd166; }
+table.score .cols { font-size: 12px; color: #9fe0b8; font-weight: 600; letter-spacing: 0.02em; }
 .bigstars { font-size: 52px; letter-spacing: 6px; color: #ffd166; text-align: center; text-shadow: 0 4px 20px rgba(255,209,102,.4); }
 .bigstars span { display: inline-block; animation: pop .4s backwards; }
 .panel .result-title { text-align: center; font-size: 30px; font-weight: 900; margin: 0; }

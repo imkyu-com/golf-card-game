@@ -180,7 +180,7 @@ function renderRules(onDone) {
       <li><b>摸牌：</b>点<b>左边牌堆</b>摸一张新牌，或点<b>右边弃牌堆</b>拿走最上面那张。</li>
       <li><b>换牌：</b>点你的任意一张牌（明牌或暗牌）与它交换，换下来的牌放进弃牌堆。</li>
       <li><b>或者弃掉：</b>如果是从牌堆摸的牌，也可以直接弃掉，然后<b>翻开自己一张暗牌</b>。从弃牌堆拿的牌必须换入。</li></ol>
-    <h3>✅ 配对抵消</h3><p>同一<b>列</b>上下两张点数相同 → 这一列直接记 <b>0 分</b>！（哪怕是两张 J）</p>
+    <h3>✅ 配对抵消</h3><p>同一<b>列</b>上下两张点数相同 → 这一列直接记 <b>0 分</b>，牌上也会改成 0。一对 2 或一对王牌是 0，不是 -4；特殊关里 K 即使是 +12，一对 K 仍是 0。横排或斜角不算对子。</p>
     <h3>🏁 结束</h3><p>有人 6 张全部翻开后，其他人<b>各再走最后一回合</b>，然后全部亮牌计分。</p>
     <h3>🔢 分值</h3><div class="cards-demo">
       <div>A<small>1 分</small></div><div>2<small>-2 分</small></div><div>3~10<small>牌面分</small></div><div>J / Q<small>10 分</small></div><div>K<small>0 分</small></div><div>★王<small>-2 分</small></div></div>
@@ -284,9 +284,10 @@ function setHint(text, mine = false, buttons = []) {
 function updateLabels(s) {
   if (!match || !s) return;
   const chips = match.players.map((pl, i) => {
-    const vis = R.scoreGrid(s.players[i].grid, s.rules, true).total;
+    const visScore = R.scoreGrid(s.players[i].grid, s.rules, true);
+    const bonus = visScore.bonus ? ` · 四条${visScore.bonus}` : '';
     const cls = `pchip ${s.phase !== 'over' && s.current === i && s.phase !== 'initial' ? 'turn' : ''} ${s.finisher === i ? 'finisher' : ''}`;
-    return `<div class="${cls}"><span class="av">${pl.avatar}</span><span class="meta"><b>${esc(pl.name)}</b><br/><span>明牌 ${vis} · 总分 ${match.totals[i]}</span></span></div>`;
+    return `<div class="${cls}"><span class="av">${pl.avatar}</span><span class="meta"><b>${esc(pl.name)}</b><br/><span>明牌 ${visScore.total}${bonus} · 总分 ${match.totals[i]}</span></span></div>`;
   });
   const me = document.getElementById('mechip');
   if (me) me.innerHTML = chips[0];
@@ -340,23 +341,29 @@ async function playHole(hIdx, tk) {
     if (s.current === 0) await humanTurn(s, tk);
     else await aiTurn(s, s.current, aiRng[s.current], tk);
   }
-  // 亮牌计分
+  // 终局分只在全部翻开之后现算一次。结算表、明牌、列高亮、牌上的 0 分都用这一份。
+  for (const pl of s.players) for (const g of pl.grid) g.up = true;
+  const finalScores = s.players.map((pl) => R.scoreGrid(pl.grid, s.rules));
+  s.scores = finalScores;
+  if (match) match.holeBreakdown = finalScores;
   setHint('亮牌计分…');
   sfx.flip();
   await scene.layout(s, { stagger: 0.02 });
-  const paired = [];
-  s.scores.forEach((sc, p) => sc.columns.forEach((c) => { if (c.paired) c.slots.forEach((sl) => paired.push(s.players[p].grid[sl].card.id)); }));
-  scene.setPaired(paired);
-  if (paired.length) sfx.pair();
+  if (finalScores.some((sc) => sc.columns.some((c) => c.paired))) sfx.pair();
   updateLabels(s);
   await sleep(1600, tk);
-  return s.scores.map((x) => x.total);
+  return finalScores.map((x) => x.total);
 }
 
 function columnPairedAfter(s, p, slot) {
-  const col = R.COLUMNS.find((c) => c.includes(slot));
-  const [a, b] = col.map((i) => s.players[p].grid[i]);
-  return a.up && b.up && a.card.rank === b.card.rank;
+  const sc = R.scoreGrid(s.players[p].grid, s.rules, true);
+  return sc.columns.some((c) => c.paired && c.slots.includes(slot));
+}
+
+function formatCols(sc) {
+  if (!sc) return '';
+  const body = sc.columns.map((c) => (c.paired ? '0' : String(c.score))).join('·');
+  return sc.bonus ? `${body}·四条${sc.bonus}` : body;
 }
 
 async function humanTurn(s, tk) {
@@ -432,11 +439,11 @@ function holeResult(scores, last, tk) {
   return new Promise((resolve, reject) => {
     if (tk !== token) return reject(ABORT);
     const best = Math.min(...match.totals);
-    const rows = match.players.map((pl, i) => `<tr class="${match.totals[i] === best ? 'best' : ''} ${i === 0 ? 'me' : ''}"><td>${pl.avatar} ${esc(pl.name)}</td><td>${scores[i]}</td><td>${match.totals[i]}</td></tr>`).join('');
+    const rows = match.players.map((pl, i) => `<tr class="${match.totals[i] === best ? 'best' : ''} ${i === 0 ? 'me' : ''}"><td><span class="who">${pl.avatar} ${esc(pl.name)}</span><div class="cols">${formatCols(match.holeBreakdown?.[i])}</div></td><td>${scores[i]}</td><td>${match.totals[i]}</td></tr>`).join('');
     const el = modal(h(`<div class="overlay clear" style="align-items:flex-end;padding-bottom:90px"><div class="panel" style="width:min(420px,100%)">
       <h2>第 ${match.hole + 1} 局结束</h2>
       <table class="score"><tr><th>玩家</th><th>本局</th><th>总分</th></tr>${rows}</table>
-      <p class="muted">绿色发光的牌 = 同列配对，记 0 分</p>
+      <p class="muted">三列里的 0 是同列对子（含一对 2、一对王牌、一对 K），不计入本局，也不加进总分。绿色发光的牌同样记 0 分。</p>
       <div class="row center"><button class="btn" id="n">${last ? '查看结果' : '下一局 →'}</button></div></div></div>`));
     el.querySelector('#n').onclick = () => { sfx.click(); el.remove(); tk === token ? resolve() : reject(ABORT); };
   });
@@ -467,7 +474,7 @@ function matchResult() {
     <div class="bigstars">${[0, 1, 2].map((i) => `<span style="animation-delay:${0.2 + i * 0.25}s" class="${i < stars ? '' : 'star-off'}">★</span>`).join('')}</div>
     ${level.id && stars > prevStars && prevStars > 0 ? '<p style="text-align:center;color:#ffd166">新纪录！</p>' : ''}
     ${vs}
-    <table class="score"><tr><th>名次</th><th>玩家</th><th>总分</th></tr>${order.map((p, r) => `<tr class="${r === 0 ? 'best' : ''} ${p.i === 0 ? 'me' : ''}"><td>${r + 1}</td><td>${p.avatar} ${esc(p.name)}</td><td>${p.total}</td></tr>`).join('')}</table>
+    <table class="score"><tr><th>名次</th><th>玩家</th><th>总分</th></tr>${order.map((p, r) => `<tr class="${r === 0 ? 'best' : ''} ${p.i === 0 ? 'me' : ''}"><td>${r + 1}</td><td><span class="who">${p.avatar} ${esc(p.name)}</span></td><td>${p.total}</td></tr>`).join('')}</table>
     ${level.id ? `<p class="muted" style="text-align:center">★★ 需 ≤ ${level.t2} 分 · ★★★ 需 ≤ ${level.t3} 分</p>` : ''}
     <div class="col">
       <div class="row center"><button class="btn green" id="chal">🤝 挑战好友</button><button class="btn green" id="share">📸 分享战绩</button></div>

@@ -31,6 +31,16 @@ export function cardValue(card, rules) {
   return rankValue(card.rank, rules);
 }
 
+// 牌面上印出来的分。同列已经抵消时必须是 0，不能再显示这张牌原来的点数。
+// 一对 2、一对王牌、以及特殊关里一对 +12 的 K，显示出来都是 0。
+export function shownCardPoints(card, paired, rules) {
+  return paired ? 0 : cardValue(card, rules);
+}
+
+export function pointsLabel(value) {
+  return `${value > 0 ? '+' : ''}${value}分`;
+}
+
 export function buildDeck(rules = DEFAULT_RULES) {
   const deck = [];
   let id = 0;
@@ -135,32 +145,52 @@ function endTurn(s) {
 }
 
 function finish(s) {
+  // 先把剩余暗牌翻开，再计分。不能用翻开之前的「明牌」分：
+  // 那时和暗牌凑成的对子还没抵消，会把已经能配对的牌算进总分。
   for (const pl of s.players) for (const g of pl.grid) g.up = true;
   s.scores = s.players.map((pl) => scoreGrid(pl.grid, s.rules));
   s.phase = 'over';
 }
 
-// 计分：同列两张同点数 → 该列 0 分
+// 计分：同一列上下两张点数相同 → 这一列 0 分。
+// 标准规则是「对子记 0」，不是把两张牌的分加起来。负分牌也一样：
+// 一对 2（各 -2）或一对王牌（各 -2）是 0，不是 -4。
+// 特殊关里 K 单张可以是 +12，但一对 K 仍然是 0，不是 +24。
+// onlyVisible 为 true 时只统计已经翻开的牌（对局中的「明牌」）。
+// 终局必须先翻开全部牌，再以 onlyVisible = false 调用，这样最后亮出的对子也是 0。
 export function scoreGrid(grid, rules = DEFAULT_RULES, onlyVisible = false) {
   let total = 0;
   const columns = [];
   const pairedRanks = {};
+  const contributions = Array(6).fill(0);
   for (const [a, b] of COLUMNS) {
     const ga = grid[a], gb = grid[b];
     const va = !onlyVisible || ga.up, vb = !onlyVisible || gb.up;
-    let score = 0, paired = false;
+    let score = 0;
+    let paired = false;
     if (va && vb && ga.card.rank === gb.card.rank) {
       paired = true;
       pairedRanks[ga.card.rank] = (pairedRanks[ga.card.rank] || 0) + 1;
+      contributions[a] = 0;
+      contributions[b] = 0;
     } else {
-      if (va) score += cardValue(ga.card, rules);
-      if (vb) score += cardValue(gb.card, rules);
+      if (va) {
+        const v = cardValue(ga.card, rules);
+        score += v;
+        contributions[a] = v;
+      }
+      if (vb) {
+        const v = cardValue(gb.card, rules);
+        score += v;
+        contributions[b] = v;
+      }
     }
     total += score;
     columns.push({ slots: [a, b], paired, score });
   }
   let bonus = 0;
+  // 四条：两列都是同一点数的对子。奖励加在已经抵消成 0 的对子之上，不会把对子的点数加回来。
   if (rules.quadBonus) for (const n of Object.values(pairedRanks)) if (n >= 2) bonus += rules.quadBonus;
   total += bonus;
-  return { total, columns, bonus };
+  return { total, columns, bonus, contributions };
 }

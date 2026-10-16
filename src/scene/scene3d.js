@@ -2,6 +2,7 @@
 // 每张牌根据自己在状态中的位置计算目标位姿，然后做补间动画（移动带抛物线、翻面带抬起）
 import * as THREE from 'three';
 import { faceTexture, backTexture, setMaxAnisotropy } from './cardTextures.js';
+import { scoreGrid, pointsLabel } from '../game/rules.js';
 
 const CW = 0.9, CH = 1.26, GAP = 0.12, SEAT_R = 3.55, STACK_DY = 0.007;
 const DECK_POS = new THREE.Vector3(-0.62, 0.03, 0);
@@ -9,6 +10,37 @@ const DISCARD_POS = new THREE.Vector3(0.62, 0.03, 0);
 
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const angDiff = (a, b) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
+
+function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function zeroBadgeTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 112;
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, 256, 112);
+  g.fillStyle = '#1b7a4b';
+  roundRect(g, 4, 4, 248, 104, 52);
+  g.fill();
+  g.lineWidth = 8;
+  g.strokeStyle = '#d8f3dc';
+  g.stroke();
+  g.fillStyle = '#ffffff';
+  g.font = 'bold 72px "Noto Sans CJK SC","WenQuanYi Micro Hei","PingFang SC","Microsoft YaHei",sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(pointsLabel(0), 128, 58);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 
 export class TableScene {
   constructor(container) {
@@ -114,6 +146,15 @@ export class TableScene {
       s.add(t);
     }
     this.geo = new THREE.PlaneGeometry(CW, CH);
+    this._zeroBadgeGeo = new THREE.PlaneGeometry(0.42, 0.2);
+    this._zeroBadgeMat = new THREE.MeshBasicMaterial({
+      map: zeroBadgeTexture(),
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
   }
 
   resize() {
@@ -186,11 +227,17 @@ export class TableScene {
     const back = new THREE.Mesh(this.geo, mk(backTexture()));
     back.rotation.x = Math.PI / 2; back.position.y = -0.004;
     for (const m of [front, back]) { m.castShadow = true; m.receiveShadow = true; m.userData.cardId = card.id; }
+    // 盖住牌面底部的原始分。只有同列抵消时才显示，避免把已经记 0 的牌再加进总分。
+    const zeroBadge = new THREE.Mesh(this._zeroBadgeGeo, this._zeroBadgeMat);
+    zeroBadge.position.set(0, -0.47, 0.02);
+    zeroBadge.visible = false;
+    zeroBadge.raycast = () => {};
+    front.add(zeroBadge);
     const group = new THREE.Group();
     group.rotation.order = 'YXZ';
     group.add(front, back);
     this.scene.add(group);
-    const entry = { group, front, back, card, tween: null, target: null };
+    const entry = { group, front, back, card, tween: null, target: null, zeroBadge };
     this.cards.set(card.id, entry);
     return entry;
   }
@@ -257,6 +304,7 @@ export class TableScene {
       }));
       g.renderOrder = pose.order || 0;
     }
+    this.syncPairing(state);
     return Promise.all(promises);
   }
 
@@ -312,7 +360,32 @@ export class TableScene {
     this.highlight = { deck, discard, slots: new Set(slots) };
   }
 
-  setPaired(ids) { this.paired = new Set(ids); }
+  setPaired(ids) {
+    this.paired = new Set(ids);
+    this._applyPairBadges();
+  }
+
+  // 列高亮和「0分」徽章都从 scoreGrid 来，和明牌分、终局分是同一条规则。
+  // 对局中只标出两张都已翻开的对子；终局全部翻开后再标，最后亮出的对子也会变成 0。
+  syncPairing(state = this.state) {
+    if (!state) { this.setPaired([]); return; }
+    const onlyVisible = state.phase !== 'over';
+    const ids = [];
+    for (const pl of state.players) {
+      const sc = scoreGrid(pl.grid, state.rules, onlyVisible);
+      for (const col of sc.columns) {
+        if (!col.paired) continue;
+        for (const slot of col.slots) ids.push(pl.grid[slot].card.id);
+      }
+    }
+    this.setPaired(ids);
+  }
+
+  _applyPairBadges() {
+    for (const e of this.cards.values()) {
+      if (e.zeroBadge) e.zeroBadge.visible = this.paired.has(e.card.id);
+    }
+  }
   shake(amount = 0.25) { this.cameraShake = amount; }
 
   // ---------- 输入 ----------

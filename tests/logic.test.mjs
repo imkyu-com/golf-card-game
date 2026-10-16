@@ -25,8 +25,142 @@ test('column pairs cancel to 0', () => {
   const s = R.scoreGrid(grid([5, 9, 12, 5, 3, 12]));
   assert.equal(s.total, 0 + 12 + 0);
   assert.deepEqual(s.columns.map((x) => x.paired), [true, false, true]);
+  assert.equal(s.contributions.reduce((a, b) => a + b, 0) + s.bonus, s.total);
   // 2 配对也是 0
   assert.equal(R.scoreGrid(grid([2, 1, 4, 2, 1, 6])).total, 0 + 0 + 10);
+});
+
+test('each column cancels on its own and contributes 0', () => {
+  const base = [3, 4, 5, 6, 7, 8]; // 列分 9 + 11 + 13 = 33
+  for (let col = 0; col < 3; col++) {
+    const ranks = base.slice();
+    ranks[col] = 9;
+    ranks[col + 3] = 9;
+    const removed = R.rankValue(base[col]) + R.rankValue(base[col + 3]);
+    const g = grid(ranks);
+    const sc = R.scoreGrid(g);
+    assert.equal(sc.columns[col].paired, true, `column ${col} paired`);
+    assert.equal(sc.columns[col].score, 0, `column ${col} score`);
+    assert.equal(sc.contributions[col], 0);
+    assert.equal(sc.contributions[col + 3], 0);
+    assert.equal(sc.total, 33 - removed);
+    for (const slot of [col, col + 3]) assert.equal(R.shownCardPoints(g[slot].card, true), 0);
+    assert.notEqual(sc.total, 33 - removed + 18);
+  }
+});
+
+// 标准规则：点数相同的一列记 0，即使单张是负分或特殊关的高分 K。不是 -4，也不是 +24。
+test('negative pairs and special-rule pairs score 0', () => {
+  const twos = R.scoreGrid(grid([2, 3, 5, 2, 4, 6]));
+  assert.equal(twos.columns[0].paired, true);
+  assert.equal(twos.columns[0].score, 0);
+  assert.equal(twos.total, 0 + 7 + 11);
+  assert.notEqual(twos.total, -4 + 7 + 11);
+
+  const jokers = R.scoreGrid(grid([0, 4, 6, 0, 1, 6]), { ...R.DEFAULT_RULES, jokers: true });
+  assert.equal(jokers.columns[0].score, 0);
+  assert.equal(jokers.columns[2].score, 0);
+  assert.equal(jokers.total, 5);
+  assert.equal(R.shownCardPoints({ rank: 0 }, true), 0);
+  assert.equal(R.shownCardPoints({ rank: 0 }, false), -2);
+
+  const kings = R.scoreGrid(grid([13, 3, 8, 13, 4, 8]), { ...R.DEFAULT_RULES, kingValue: 12 });
+  assert.equal(kings.columns[0].paired, true);
+  assert.equal(kings.columns[0].score, 0);
+  assert.equal(kings.columns[2].score, 0);
+  assert.equal(kings.total, 7);
+  assert.equal(R.shownCardPoints({ rank: 13 }, true, { kingValue: 12 }), 0);
+  assert.equal(R.shownCardPoints({ rank: 13 }, false, { kingValue: 12 }), 12);
+  assert.notEqual(kings.total, 24 + 7 + 16);
+});
+
+test('pair hidden until the final reveal is 0, not the face-up card plus the new card', () => {
+  const g = grid([8, 3, 1, 8, 4, 2]);
+  g[3].up = false;
+  g[2].up = false;
+  g[5].up = false;
+  const vis = R.scoreGrid(g, R.DEFAULT_RULES, true);
+  assert.equal(vis.columns[0].paired, false);
+  assert.equal(vis.columns[0].score, 8);
+  for (const slot of g.keys()) g[slot].up = true;
+  const fin = R.scoreGrid(g, R.DEFAULT_RULES, false);
+  assert.equal(fin.columns[0].paired, true);
+  assert.equal(fin.columns[0].score, 0);
+  assert.equal(fin.contributions[0], 0);
+  assert.equal(fin.contributions[3], 0);
+  assert.equal(fin.total, 0 + 7 + (1 - 2));
+  assert.equal(R.scoreGrid(g, R.DEFAULT_RULES, true).total, fin.total);
+  assert.ok(fin.columns.every((c) => !c.paired || c.score === 0));
+});
+
+test('game end reveals then scores, so a last-flip pair and an auto-revealed pair are both 0', () => {
+  const s = R.createHole({ seed: 42, numPlayers: 2, rules: { kingValue: 12 } });
+  R.initialFlip(s, 0, 0); R.initialFlip(s, 0, 1);
+  R.initialFlip(s, 1, 0); R.initialFlip(s, 1, 1);
+  const put = (p, slot, rank, up) => {
+    s.players[p].grid[slot].card = { id: 5000 + p * 10 + slot, rank, suit: 'H' };
+    s.players[p].grid[slot].up = up;
+  };
+  // P0：列 0 已经是明牌一对 2；列 2 的 7 要等最后一次翻牌才配对。
+  put(0, 0, 2, true); put(0, 1, 9, true); put(0, 2, 7, true);
+  put(0, 3, 2, true); put(0, 4, 4, true); put(0, 5, 7, false);
+  // P1：列 0 两张 8 都是暗牌，最后一回合不会去翻它们，终局自动亮牌后才成为对子。
+  put(1, 0, 8, false); put(1, 1, 6, true); put(1, 2, 13, true);
+  put(1, 3, 8, false); put(1, 4, 3, false); put(1, 5, 13, false);
+
+  const before = R.scoreGrid(s.players[0].grid, s.rules, true);
+  assert.equal(before.columns[0].score, 0);
+  assert.equal(before.columns[2].score, 7);
+
+  R.drawFromDeck(s);
+  R.discardHeld(s);
+  R.flipAfterDiscard(s, 5);
+  assert.equal(s.finisher, 0);
+  assert.equal(s.phase, 'draw');
+  R.drawFromDeck(s);
+  R.swapHeld(s, 1);
+  assert.equal(s.phase, 'over');
+  assert.ok(s.players.every((p) => p.grid.every((g) => g.up)));
+
+  const p0 = s.scores[0];
+  assert.equal(p0.columns[0].score, 0);
+  assert.equal(p0.columns[2].paired, true);
+  assert.equal(p0.columns[2].score, 0);
+  assert.equal(p0.total, 13);
+  const raw0 = s.players[0].grid.reduce((a, g) => a + R.cardValue(g.card, s.rules), 0);
+  assert.equal(raw0, 23);
+  assert.notEqual(p0.total, raw0);
+
+  const p1 = s.scores[1];
+  assert.equal(p1.columns[0].paired, true);
+  assert.equal(p1.columns[0].score, 0);
+  assert.equal(p1.columns[2].paired, true);
+  assert.equal(p1.columns[2].score, 0);
+  assert.equal(p1.contributions[0] + p1.contributions[3] + p1.contributions[2] + p1.contributions[5], 0);
+});
+
+test('multi-round totals add cancelled hole scores, not raw card values', () => {
+  const holes = [
+    { ranks: [10, 1, 3, 10, 2, 4], rules: {}, expect: 6 },
+    { ranks: [2, 11, 13, 2, 5, 13], rules: { kingValue: 12 }, expect: 15 },
+    { ranks: [0, 4, 6, 0, 1, 6], rules: { jokers: true }, expect: 5 },
+    { ranks: [7, 7, 3, 7, 7, 4], rules: { quadBonus: -10 }, expect: -3 },
+  ];
+  let total = 0;
+  let raw = 0;
+  for (const hole of holes) {
+    const rules = { ...R.DEFAULT_RULES, ...hole.rules };
+    const sc = R.scoreGrid(grid(hole.ranks), rules);
+    assert.equal(sc.total, hole.expect);
+    assert.equal(sc.contributions.reduce((a, b) => a + b, 0) + sc.bonus, sc.total);
+    assert.ok(sc.columns.every((c) => !c.paired || c.score === 0));
+    total += sc.total;
+    raw += hole.ranks.reduce((a, r) => a + R.rankValue(r, rules), 0);
+  }
+  assert.equal(total, 6 + 15 + 5 + -3);
+  assert.ok(total < raw);
+  const again = holes.reduce((sum, hole) => sum + R.scoreGrid(grid(hole.ranks), { ...R.DEFAULT_RULES, ...hole.rules }).total, 0);
+  assert.equal(again, total);
 });
 
 test('quad bonus', () => {

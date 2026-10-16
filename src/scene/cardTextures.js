@@ -1,6 +1,6 @@
 // 用 Canvas 程序化绘制牌面/牌背纹理（无需任何外部美术资源）
 import * as THREE from 'three';
-import { SUIT_SYMBOL, rankLabel, rankValue } from '../game/rules.js';
+import { SUIT_SYMBOL, rankLabel, rankValue, pointsLabel } from '../game/rules.js';
 
 export const TEX_W = 256, TEX_H = 360;
 const FONT = '"Noto Sans CJK SC","PingFang SC","Microsoft YaHei",Arial,sans-serif';
@@ -82,7 +82,8 @@ export function faceTexture(card, rules) {
     roundRect(g, cx - 46, TEX_H - 62, 92, 38, 19); g.fill();
     g.fillStyle = '#fff';
     g.font = `bold 26px ${FONT}`;
-    g.fillText(`${v > 0 ? '+' : ''}${v}分`, cx, TEX_H - 42);
+    // 这是单张牌的原始分。同列抵消之后，场景会盖上「0分」，不能再把这里的数字加进总分。
+    g.fillText(pointsLabel(v), cx, TEX_H - 42);
   });
   cache.set(key, t);
   return t;
