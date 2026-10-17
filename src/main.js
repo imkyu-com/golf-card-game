@@ -179,7 +179,8 @@ function renderRules(onDone) {
     <h3>🔁 每回合</h3><ol>
       <li><b>摸牌：</b>点<b>左边牌堆</b>摸一张新牌，或点<b>右边弃牌堆</b>拿走最上面那张。</li>
       <li><b>换牌：</b>点你的任意一张牌（明牌或暗牌）与它交换，换下来的牌放进弃牌堆。</li>
-      <li><b>或者弃掉：</b>如果是从牌堆摸的牌，也可以直接弃掉，然后<b>翻开自己一张暗牌</b>。从弃牌堆拿的牌必须换入。</li></ol>
+      <li><b>或者弃掉：</b>如果是从牌堆摸的牌，也可以直接弃掉，然后<b>翻开自己一张暗牌</b>。从牌堆摸的牌不能放回牌堆。</li>
+      <li><b>放回：</b>从弃牌堆拿起的牌，在换进自己的牌阵之前不算拿走。可以点<b>「放回」</b>或再点弃牌堆，把牌放回去，重新选择牌堆或弃牌堆。这一步不消耗回合。</li></ol>
     <h3>✅ 配对抵消</h3><p>同一<b>列</b>上下两张点数相同 → 这一列直接记 <b>0 分</b>，牌上也会改成 0。一对 2 或一对王牌是 0，不是 -4；特殊关里 K 即使是 +12，一对 K 仍是 0。横排或斜角不算对子。</p>
     <h3>🏁 结束</h3><p>有人 6 张全部翻开后，其他人<b>各再走最后一回合</b>，然后全部亮牌计分。</p>
     <h3>🔢 分值</h3><div class="cards-demo">
@@ -367,41 +368,53 @@ function formatCols(sc) {
 }
 
 async function humanTurn(s, tk) {
-  const top = s.discard[s.discard.length - 1];
-  setHint(`你的回合：点左边牌堆摸牌，或点右边弃牌堆拿 ${top ? R.rankLabel(top.rank) : ''}`, true);
-  const hit = await waitPick({ deck: true, discard: !!top, slots: [] }, tk);
-  if (hit.kind === 'deck') R.drawFromDeck(s); else R.takeDiscard(s);
-  sfx.draw();
-  await scene.layout(s);
-  const held = s.held;
-  const v = R.cardValue(held, s.rules);
   const all = [0, 1, 2, 3, 4, 5];
-  let choice;
-  if (s.heldFrom === 'deck') {
-    setHint(`摸到 ${R.rankLabel(held.rank)}（${v} 分）：点你的一张牌交换，或弃掉它`, true, [{ label: '🗑️ 弃掉这张', cls: 'secondary', onClick: () => pending && pending.resolve({ kind: 'discard' }) }]);
-    choice = await waitPick({ slots: all, discard: true }, tk);
-  } else {
-    setHint(`拿了 ${R.rankLabel(held.rank)}（${v} 分）：点你的一张牌进行交换`, true);
-    choice = await waitPick({ slots: all }, tk);
-  }
-  pending = null; scene.setHighlight(); setHint('…');
-  if (choice.kind === 'slot') {
-    R.swapHeld(s, choice.slot);
-    sfx.place();
+  for (;;) {
+    if (tk !== token) throw ABORT;
+    const top = s.discard[s.discard.length - 1];
+    setHint(`你的回合：点左边牌堆摸牌，或点右边弃牌堆拿 ${top ? R.rankLabel(top.rank) : ''}`, true);
+    const hit = await waitPick({ deck: true, discard: !!top, slots: [] }, tk);
+    if (hit.kind === 'deck') R.drawFromDeck(s); else R.takeDiscard(s);
+    sfx.draw();
     await scene.layout(s);
-    if (columnPairedAfter(s, 0, choice.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
-  } else {
-    R.discardHeld(s);
-    sfx.place();
-    await scene.layout(s);
-    if (s.phase === 'flip') {
-      setHint('翻开你的一张暗牌', true);
-      const f = await waitPick({ slots: R.faceDownSlots(s.players[0]) }, tk);
-      R.flipAfterDiscard(s, f.slot);
-      sfx.flip();
-      await scene.layout(s);
-      if (columnPairedAfter(s, 0, f.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
+    if (tk !== token) throw ABORT;
+    const held = s.held;
+    const v = R.cardValue(held, s.rules);
+    const fromDiscard = s.heldFrom === 'discard';
+    let choice;
+    if (fromDiscard) {
+      setHint(`拿了 ${R.rankLabel(held.rank)}（${v} 分）：点你的一张牌交换，或放回弃牌堆`, true, [{ label: '↩ 放回', cls: 'secondary', onClick: () => pending && pending.resolve({ kind: 'return' }) }]);
+      choice = await waitPick({ slots: all, discard: true }, tk);
+    } else {
+      setHint(`摸到 ${R.rankLabel(held.rank)}（${v} 分）：点你的一张牌交换，或弃掉它`, true, [{ label: '🗑️ 弃掉这张', cls: 'secondary', onClick: () => pending && pending.resolve({ kind: 'discard' }) }]);
+      choice = await waitPick({ slots: all, discard: true }, tk);
     }
+    pending = null; scene.setHighlight(); setHint('…');
+    if (fromDiscard && (choice.kind === 'return' || choice.kind === 'discard')) {
+      R.returnDiscard(s);
+      sfx.place();
+      await scene.layout(s);
+      continue;
+    }
+    if (choice.kind === 'slot') {
+      R.swapHeld(s, choice.slot);
+      sfx.place();
+      await scene.layout(s);
+      if (columnPairedAfter(s, 0, choice.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
+    } else {
+      R.discardHeld(s);
+      sfx.place();
+      await scene.layout(s);
+      if (s.phase === 'flip') {
+        setHint('翻开你的一张暗牌', true);
+        const f = await waitPick({ slots: R.faceDownSlots(s.players[0]) }, tk);
+        R.flipAfterDiscard(s, f.slot);
+        sfx.flip();
+        await scene.layout(s);
+        if (columnPairedAfter(s, 0, f.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
+      }
+    }
+    return;
   }
 }
 

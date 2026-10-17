@@ -146,6 +146,21 @@ export class TableScene {
       s.add(t);
     }
     this.geo = new THREE.PlaneGeometry(CW, CH);
+    // 弃牌堆被拿空时仍可点这块区域把牌放回去。有牌时上面的牌更近，会先被点到。
+    this.discardZone = new THREE.Mesh(this.geo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
+    this.discardZone.rotation.x = -Math.PI / 2;
+    this.discardZone.position.set(DISCARD_POS.x, 0.012, DISCARD_POS.z);
+    this.discardZone.userData.discardZone = true;
+    s.add(this.discardZone);
+    this.discardPad = new THREE.Mesh(
+      new THREE.RingGeometry(0.38, 0.5, 40),
+      new THREE.MeshBasicMaterial({ color: '#ffd166', transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    this.discardPad.rotation.x = -Math.PI / 2;
+    this.discardPad.position.set(DISCARD_POS.x, 0.016, DISCARD_POS.z);
+    this.discardPad.visible = false;
+    this.discardPad.raycast = () => {};
+    s.add(this.discardPad);
     this._zeroBadgeGeo = new THREE.PlaneGeometry(0.42, 0.2);
     this._zeroBadgeMat = new THREE.MeshBasicMaterial({
       map: zeroBadgeTexture(),
@@ -224,8 +239,13 @@ export class TableScene {
     const mk = (map) => new THREE.MeshStandardMaterial({ map, alphaTest: 0.5, roughness: 0.55, metalness: 0, emissive: new THREE.Color('#000000') });
     const front = new THREE.Mesh(this.geo, mk(faceTexture(card, rules)));
     front.rotation.x = -Math.PI / 2; front.position.y = 0.004;
+    // 牌背画布上旗尖朝上。扣着的牌（flip = π）如果不再转一圈，旗尖会朝座位外，
+    // 自己面前的牌背在画面上就是倒的。绕牌背法线转 180° 后，每个座位的牌背都指向桌心，
+    // 和明牌的「上方」是同一条边；牌堆（yaw = 0）因此也是正的。牌面网格不动，翻开后仍然可读。
     const back = new THREE.Mesh(this.geo, mk(backTexture()));
-    back.rotation.x = Math.PI / 2; back.position.y = -0.004;
+    back.rotation.x = Math.PI / 2;
+    back.rotation.z = Math.PI;
+    back.position.y = -0.004;
     for (const m of [front, back]) { m.castShadow = true; m.receiveShadow = true; m.userData.cardId = card.id; }
     // 盖住牌面底部的原始分。只有同列抵消时才显示，避免把已经记 0 的牌再加进总分。
     const zeroBadge = new THREE.Mesh(this._zeroBadgeGeo, this._zeroBadgeMat);
@@ -342,6 +362,11 @@ export class TableScene {
         if (m.emissiveIntensity !== intensity || on) { m.emissive.set(on ? color : '#000000'); m.emissiveIntensity = intensity; }
       }
     }
+    if (this.discardPad) {
+      const emptyPick = !!(st && this.highlight.discard && st.discard.length === 0);
+      this.discardPad.visible = emptyPick;
+      if (emptyPick) this.discardPad.material.opacity = 0.55 + 0.3 * Math.sin(now * 5);
+    }
     if (this.flagCloth) this.flagCloth.rotation.y = Math.sin(now * 1.7) * 0.25;
     // 镜头轻微呼吸 + 震动
     const cam = this.camera;
@@ -394,11 +419,13 @@ export class TableScene {
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
     const meshes = [];
+    if (this.discardZone) meshes.push(this.discardZone);
     for (const e of this.cards.values()) meshes.push(e.front, e.back);
     const hits = this.raycaster.intersectObjects(meshes, false);
     const st = this.state;
     if (!st) return null;
     for (const h of hits) {
+      if (h.object.userData.discardZone) return { kind: 'discard', id: st.discard[st.discard.length - 1]?.id ?? null };
       const id = h.object.userData.cardId;
       if (st.deck.some((c) => c.id === id)) return { kind: 'deck', id: st.deck[st.deck.length - 1]?.id };
       if (st.discard.length && st.discard[st.discard.length - 1].id === id) return { kind: 'discard', id };

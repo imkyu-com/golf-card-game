@@ -126,6 +126,16 @@ export function discardHeld(s) {
   else endTurn(s);
 }
 
+// 弃牌堆拿起的牌，只要还没换进自己的牌阵，就不算拿走。
+// 放回后回到选来源，回合、当前玩家、牌堆和随机数都不变。牌堆摸到的牌不能放回。
+export function returnDiscard(s) {
+  assert(s.phase === 'hold' && s.heldFrom === 'discard', 'can only return a card taken from discard');
+  s.discard.push(s.held);
+  s.held = null;
+  s.heldFrom = null;
+  s.phase = 'draw';
+}
+
 export function flipAfterDiscard(s, slot) {
   assert(s.phase === 'flip', 'phase');
   const g = s.players[s.current].grid[slot];

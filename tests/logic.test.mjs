@@ -201,6 +201,119 @@ test('turn flow + last turn rule', () => {
   assert.ok(s.players.every((p) => p.grid.every((g) => g.up)));
 });
 
+function snapshot(s) {
+  return {
+    phase: s.phase,
+    current: s.current,
+    turn: s.turn,
+    finisher: s.finisher,
+    held: s.held,
+    heldFrom: s.heldFrom,
+    deck: s.deck.map((c) => c.id),
+    discard: s.discard.map((c) => c.id),
+    grids: s.players.map((p) => p.grid.map((g) => ({ id: g.card.id, up: g.up, rank: g.card.rank }))),
+    scores: s.players.map((p) => R.scoreGrid(p.grid, s.rules, true).total),
+  };
+}
+
+test('discard pick can be returned and is not a taken card', () => {
+  for (const numPlayers of [2, 3, 4]) {
+    const s = R.createHole({ seed: 80 + numPlayers, numPlayers, startPlayer: numPlayers - 1 });
+    for (let p = 0; p < numPlayers; p++) {
+      R.initialFlip(s, p, 0);
+      R.initialFlip(s, p, 1);
+    }
+    assert.equal(s.phase, 'draw');
+    const before = snapshot(s);
+    const top = s.discard[s.discard.length - 1];
+    const only = s.discard.length === 1 ? top : null;
+
+    R.takeDiscard(s);
+    assert.equal(s.phase, 'hold');
+    assert.equal(s.heldFrom, 'discard');
+    assert.equal(s.held, top);
+    assert.equal(s.turn, before.turn);
+    assert.equal(s.current, before.current);
+    assert.throws(() => R.discardHeld(s));
+
+    R.returnDiscard(s);
+    assert.deepEqual(snapshot(s), before);
+    assert.equal(s.discard[s.discard.length - 1], top);
+    if (only) assert.equal(s.discard.length, 1);
+
+    // 放回后再拿、再放，仍然和拿之前一样，随机数也不前进。
+    const twin = R.createHole({ seed: 80 + numPlayers, numPlayers, startPlayer: numPlayers - 1 });
+    for (let p = 0; p < numPlayers; p++) {
+      R.initialFlip(twin, p, 0);
+      R.initialFlip(twin, p, 1);
+    }
+    R.takeDiscard(s);
+    R.returnDiscard(s);
+    R.takeDiscard(s);
+    R.returnDiscard(s);
+    assert.deepEqual(snapshot(s), before);
+    assert.equal(s.rng(), twin.rng());
+
+    // 放回之后可以改从牌堆摸。牌堆摸到的牌不能放回，弃牌选项仍在。
+    const deckTop = s.deck[s.deck.length - 1];
+    R.drawFromDeck(s);
+    assert.equal(s.held, deckTop);
+    assert.equal(s.heldFrom, 'deck');
+    assert.equal(s.phase, 'hold');
+    const heldId = s.held.id;
+    const deckLen = s.deck.length;
+    assert.throws(() => R.returnDiscard(s));
+    assert.equal(s.held.id, heldId);
+    assert.equal(s.heldFrom, 'deck');
+    assert.equal(s.phase, 'hold');
+    assert.equal(s.deck.length, deckLen);
+    assert.equal(s.turn, before.turn);
+  }
+});
+
+test('returned discard pick does not change the rest of the hole or the score', () => {
+  function play(seed, numPlayers, fidget) {
+    const s = R.createHole({ seed, numPlayers, rules: { startFlips: 0, quadBonus: -10 } });
+    if (fidget) {
+      R.takeDiscard(s);
+      R.returnDiscard(s);
+      R.takeDiscard(s);
+      R.returnDiscard(s);
+    }
+    let guard = 0;
+    while (s.phase !== 'over' && guard++ < 500) {
+      R.drawFromDeck(s);
+      const down = s.players[s.current].grid.findIndex((g) => !g.up);
+      R.swapHeld(s, down >= 0 ? down : 0);
+    }
+    assert.equal(s.phase, 'over');
+    return { scores: s.scores.map((x) => x.total), turns: s.turn, deck: s.deck.map((c) => c.id), discard: s.discard.map((c) => c.id) };
+  }
+  for (const numPlayers of [2, 3, 4]) {
+    for (const seed of [11, 99, 1234]) {
+      assert.deepEqual(play(seed, numPlayers, true), play(seed, numPlayers, false));
+    }
+  }
+});
+
+test('AI never puts a discard pick back', () => {
+  for (let i = 0; i < 24; i++) {
+    const s = R.createHole({ seed: 3000 + i, numPlayers: 3, rules: { jokers: i % 2 === 0 } });
+    for (let p = 0; p < 3; p++) {
+      for (const slot of AI.chooseInitialFlips(s, p, mulberry32(i + p))) R.initialFlip(s, p, slot);
+    }
+    assert.equal(s.phase, 'draw');
+    R.takeDiscard(s);
+    for (const level of ['easy', 'normal', 'hard']) {
+      const d = AI.choosePlacement(s, s.current, level, mulberry32(9000 + i));
+      assert.equal(d.type, 'swap');
+      assert.equal(typeof d.slot, 'number');
+    }
+    assert.equal(s.phase, 'hold');
+    assert.equal(s.heldFrom, 'discard');
+  }
+});
+
 test('card conservation', () => {
   const s = R.createHole({ seed: 77, numPlayers: 4, rules: { jokers: true } });
   const count = () => s.deck.length + s.discard.length + (s.held ? 1 : 0) + s.players.reduce((a, p) => a + p.grid.length, 0);

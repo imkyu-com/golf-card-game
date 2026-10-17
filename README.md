@@ -35,7 +35,7 @@ scripts/screenshots.mjs 端到端截图脚本
 ```
 
 ## 规则
-- 每人 2×3 共 6 张牌，开局翻开 2 张。轮到自己时，从牌堆或弃牌堆摸一张，和自己的任意一张牌交换。从牌堆摸的牌也可以直接弃掉，然后翻开自己一张暗牌。
+- 每人 2×3 共 6 张牌，开局翻开 2 张。轮到自己时，从牌堆或弃牌堆摸一张，和自己的任意一张牌交换。从牌堆摸的牌也可以直接弃掉，然后翻开自己一张暗牌，但不能放回牌堆。从弃牌堆拿起的牌在换进自己的牌阵之前可以放回，回合不消耗，之后仍可改从牌堆摸。
 - 同一列两张点数相同，这一列记 0 分，对局中的「明牌」、牌上的徽章、列高亮和终局总分用的是同一次计分。分值：A=1，2=-2，3–10 按牌面，J/Q=10，K=0（「国王之怒」里单张 K 是 +12），王=-2（只在有王牌的关卡出现）。
 - 一对 2 或一对王牌也是 0 分，不是 -4。一对 K 在 K=+12 的关卡里同样是 0，不是 +24。四条（两列相同点数的对子）另加奖励（例如 -10），这个奖励加在已经抵消成 0 的对子上，不会把对子的点数加回来。
 - 有人 6 张全翻开后，其他人各再走最后一回合，然后全部亮牌，再按同一规则计分。最后才翻开、从而凑成的对子也是 0，不会按翻开前的明牌分把其中一张算进总分。多局的总分是各局这个分数相加。
@@ -48,7 +48,7 @@ scripts/screenshots.mjs 端到端截图脚本
 ## 以后接入真实后端
 1. **全球排行榜和账号**：按 `LocalBackend` 的同一套接口写 `RemoteBackend`（getProfile/saveProfile/saveLevelResult/submitScore/getLeaderboard/recordChallenge），然后在 `main.js` 里替换。服务端可以用 seed 和操作序列回放 `rules.js`，以此校验成绩、防作弊。
 2. **挑战链接**：现在把数据直接编码进 URL。以后可以改成服务端生成短 ID（`/c/AbC123`），还能统计有多少人应战。
-3. **在线对战**：`rules.js` 是纯状态机，所有操作都是 `drawFromDeck / takeDiscard / swapHeld / discardHeld / flipAfterDiscard`，可以直接放到 WebSocket 服务端做权威裁判。客户端只发操作，收到状态后调用 `scene.layout(state)`（声明式渲染，任何状态都能直接画出来）。`main.js` 里的 `humanTurn / aiTurn` 可以再抽象出一个 `RemotePlayer`，等待网络消息。
+3. **在线对战**：`rules.js` 是纯状态机，所有操作都是 `drawFromDeck / takeDiscard / returnDiscard / swapHeld / discardHeld / flipAfterDiscard`，可以直接放到 WebSocket 服务端做权威裁判。客户端只发操作，收到状态后调用 `scene.layout(state)`（声明式渲染，任何状态都能直接画出来）。`main.js` 里的 `humanTurn / aiTurn` 可以再抽象出一个 `RemotePlayer`，等待网络消息。
 4. 注意：开局时 AI 也用 seed 派生的随机数，但它的决策会受人类操作影响，所以挑战模式能保证**发牌相同**，不保证 AI 的每一步都相同。
 
 ## 已知问题和限制
