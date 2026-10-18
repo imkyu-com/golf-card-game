@@ -284,20 +284,32 @@ function setHint(text, mine = false, buttons = []) {
 // 玩家标签：投影 3D 座位位置到屏幕
 function updateLabels(s) {
   if (!match || !s) return;
+  const portrait = window.innerWidth < window.innerHeight;
   const chips = match.players.map((pl, i) => {
     const visScore = R.scoreGrid(s.players[i].grid, s.rules, true);
     const bonus = visScore.bonus ? ` · 四条${visScore.bonus}` : '';
     const cls = `pchip ${s.phase !== 'over' && s.current === i && s.phase !== 'initial' ? 'turn' : ''} ${s.finisher === i ? 'finisher' : ''}`;
-    return `<div class="${cls}"><span class="av">${pl.avatar}</span><span class="meta"><b>${esc(pl.name)}</b><br/><span>明牌 ${visScore.total}${bonus} · 总分 ${match.totals[i]}</span></span></div>`;
+    const detail = portrait && i > 0
+      ? `${visScore.total} 分`
+      : `明牌 ${visScore.total}${bonus} · 总分 ${match.totals[i]}`;
+    return `<div class="${cls}"><span class="av">${pl.avatar}</span><span class="meta"><b>${esc(pl.name)}</b><br/><span>${detail}</span></span></div>`;
   });
   const me = document.getElementById('mechip');
   if (me) me.innerHTML = chips[0];
   let html = '';
   for (let i = 1; i < chips.length; i++) {
-    const p = scene.seatScreenPos(i);
-    if (!p) continue;
-    const x = Math.min(window.innerWidth - 80, Math.max(80, p.x)), y = Math.min(window.innerHeight - 90, Math.max(110, p.y));
-    html += `<div class="label-abs" style="left:${x}px;top:${y}px">${chips[i]}</div>`;
+    if (portrait) {
+      const a = scene.seatAnchor(i);
+      if (!a) continue;
+      const x = Math.min(window.innerWidth - 58, Math.max(58, a.x));
+      const y = Math.max(68, a.y);
+      html += `<div class="label-abs above" style="left:${x}px;top:${y}px">${chips[i]}</div>`;
+    } else {
+      const p = scene.seatScreenPos(i);
+      if (!p) continue;
+      const x = Math.min(window.innerWidth - 80, Math.max(80, p.x)), y = Math.min(window.innerHeight - 90, Math.max(110, p.y));
+      html += `<div class="label-abs" style="left:${x}px;top:${y}px">${chips[i]}</div>`;
+    }
   }
   labels.innerHTML = html;
 }

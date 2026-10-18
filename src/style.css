@@ -74,6 +74,7 @@ button { font: inherit; cursor: pointer; border: none; }
 .pchip.turn { border-color: #ffd166; box-shadow: 0 0 16px rgba(255,209,102,.7); }
 .pchip.finisher::after { content: '🏁'; }
 .label-abs { position: absolute; transform: translate(-50%, -50%); }
+.label-abs.above { transform: translate(-50%, calc(-100% - 6px)); }
 
 #toast { position: fixed; top: 22%; left: 50%; transform: translateX(-50%); pointer-events: none; z-index: 20; }
 .toast-msg { background: rgba(230,57,70,.92); color: #fff; font-size: 22px; font-weight: 800; padding: 12px 26px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.4); animation: toast 2.2s forwards; }

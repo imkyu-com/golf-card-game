@@ -7,6 +7,17 @@ import { scoreGrid, pointsLabel } from '../game/rules.js';
 const CW = 0.9, CH = 1.26, GAP = 0.12, SEAT_R = 3.55, STACK_DY = 0.007;
 const DECK_POS = new THREE.Vector3(-0.62, 0.03, 0);
 const DISCARD_POS = new THREE.Vector3(0.62, 0.03, 0);
+// 竖屏：镜头靠近自己，自己的 2×3 放大并略微立起；对手缩进远侧，仍可读。
+// 数字是在 390×844 / 360×740 / 320×568 / 768×1024 上投影测出来的，横屏不走这条。
+const PORTRAIT = {
+  humanR: 3.28, humanScale: 1.2, humanTilt: 0.28, rowSpread: 1.12,
+  farR: 2.7, farScale: 1.0,
+  sideR: 2.95, sideScale: 0.72, sideAng: 0.34,
+  sideAng4: 0.14, sideR4: 2.22, sideScale4: 0.56,
+  farR4: 3.15, farScale4: 0.8,
+  pileScale: 1.12, pileZ: 0.12, pileX: 0.78,
+  fov: 56, camY: 8.4, camZ: 9.0, targetZ: 0.35,
+};
 
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const angDiff = (a, b) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
@@ -175,54 +186,168 @@ export class TableScene {
   resize() {
     const w = this.container.clientWidth || window.innerWidth, h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
-    const aspect = w / h;
-    this.camera.aspect = aspect;
-    if (aspect < 1) {
-      // 竖屏：更俯视、视角更大，按水平视角算距离，保证整张桌子横向放得下
-      this.camera.fov = 62;
-      const hfov = 2 * Math.atan(Math.tan((62 * Math.PI) / 360) * aspect);
-      const d = 6.6 / Math.tan(hfov / 2);
-      this.basePos = new THREE.Vector3(0, d * 0.94, d * 0.34);
-      this.cameraTarget.set(0, 0, 0.9);
-    } else {
+    const aspect = w / Math.max(h, 1);
+    const portrait = aspect < 1;
+    this._applyCamera(w, h, portrait);
+    // 只有横竖屏切换才重排座位。手机地址栏收起只会改高度，重排会打断发牌动画。
+    if (this._layoutMode !== (portrait ? 'p' : 'd')) {
+      this._layoutMode = portrait ? 'p' : 'd';
+      this._portrait = portrait;
+      this._syncPiles();
+      if (this.playerCount) {
+        this._placeSeats();
+        if (this.state) this.layout(this.state, { duration: 0.35 });
+      }
+    }
+  }
+
+  _applyCamera(w, h, portrait) {
+    this._portrait = portrait;
+    this.camera.aspect = w / Math.max(h, 1);
+    if (!portrait) {
       this.camera.fov = 42;
       this.basePos = new THREE.Vector3(0, 10.2, 8.6);
       this.cameraTarget.set(0, 0, 0.7);
+    } else {
+      // 矮屏（地址栏或小手机）把注视点往自己这边挪一点，避免最前一排被底栏挡住。
+      const short = Math.min(1, Math.max(0, (760 - h) / 220));
+      this.camera.fov = PORTRAIT.fov;
+      this.basePos = new THREE.Vector3(0, PORTRAIT.camY, PORTRAIT.camZ + short * 0.35);
+      this.cameraTarget.set(0, 0, PORTRAIT.targetZ + short * 0.9);
     }
     this.camera.position.copy(this.basePos);
     this.camera.lookAt(this.cameraTarget);
     this.camera.updateProjectionMatrix();
   }
 
+  _syncPiles() {
+    if (this._portrait) {
+      this._pile = { x: PORTRAIT.pileX, z: PORTRAIT.pileZ, scale: PORTRAIT.pileScale };
+    } else {
+      this._pile = { x: 0.62, z: 0, scale: 1 };
+    }
+    const { x, z, scale } = this._pile;
+    if (this.discardZone) {
+      this.discardZone.position.set(x, 0.012, z);
+      this.discardZone.scale.setScalar(scale);
+    }
+    if (this.discardPad) {
+      this.discardPad.position.set(x, 0.016, z);
+      this.discardPad.scale.setScalar(scale);
+    }
+  }
+
   // ---------- 座位 ----------
   setupSeats(n) {
-    this.seats = [];
-    for (let i = 0; i < n; i++) {
-      let ang = Math.PI / 2 + (i * Math.PI * 2) / n;
-      if (n === 2 && i === 1) ang = -Math.PI / 2;
-      if (n === 3) ang = [Math.PI / 2, Math.PI * (7 / 6), Math.PI * (11 / 6)][i];
-      if (n === 4) ang = [Math.PI / 2, Math.PI, -Math.PI / 2, 0][i];
-      const pos = new THREE.Vector3(Math.cos(ang) * SEAT_R, 0, Math.sin(ang) * SEAT_R);
-      this.seats.push({ ang, pos, yaw: Math.PI / 2 - ang });
+    this.playerCount = n;
+    this._portrait = (this.container.clientWidth || window.innerWidth) < (this.container.clientHeight || window.innerHeight);
+    this._layoutMode = this._portrait ? 'p' : 'd';
+    this._syncPiles();
+    this._placeSeats();
+  }
+
+  _seat(ang, r, scale, tilt = 0, rowSpread = 1) {
+    const pos = new THREE.Vector3(Math.cos(ang) * r, 0, Math.sin(ang) * r);
+    return { ang, pos, yaw: Math.PI / 2 - ang, scale, tilt, rowSpread };
+  }
+
+  _placeSeats() {
+    const n = this.playerCount;
+    if (!n) return;
+    if (!this._portrait) {
+      this.seats = [];
+      for (let i = 0; i < n; i++) {
+        let ang = Math.PI / 2 + (i * Math.PI * 2) / n;
+        if (n === 2 && i === 1) ang = -Math.PI / 2;
+        if (n === 3) ang = [Math.PI / 2, Math.PI * (7 / 6), Math.PI * (11 / 6)][i];
+        if (n === 4) ang = [Math.PI / 2, Math.PI, -Math.PI / 2, 0][i];
+        this.seats.push(this._seat(ang, SEAT_R, 1, 0, 1));
+      }
+      return;
+    }
+    const P = PORTRAIT;
+    const human = this._seat(Math.PI / 2, P.humanR, P.humanScale, P.humanTilt, P.rowSpread);
+    if (n === 2) this.seats = [human, this._seat(-Math.PI / 2, P.farR, P.farScale)];
+    else if (n === 3) this.seats = [
+      human,
+      this._seat(Math.PI * (1 + P.sideAng), P.sideR, P.sideScale),
+      this._seat(-Math.PI * P.sideAng, P.sideR, P.sideScale),
+    ];
+    else if (n === 4) this.seats = [
+      human,
+      this._seat(Math.PI * (1 + P.sideAng4), P.sideR4, P.sideScale4),
+      this._seat(-Math.PI / 2, P.farR4, P.farScale4),
+      this._seat(-Math.PI * P.sideAng4, P.sideR4, P.sideScale4),
+    ];
+    else {
+      this.seats = [];
+      for (let i = 0; i < n; i++) {
+        const ang = Math.PI / 2 + (i * Math.PI * 2) / n;
+        const mine = i === 0;
+        this.seats.push(this._seat(ang, mine ? P.humanR : P.sideR, mine ? P.humanScale : P.sideScale, mine ? P.humanTilt : 0, mine ? P.rowSpread : 1));
+      }
     }
   }
 
   slotPose(p, slot) {
     const seat = this.seats[p];
+    const s = seat.scale ?? 1;
+    const spread = seat.rowSpread ?? 1;
     const c = slot % 3, r = Math.floor(slot / 3);
-    const lx = (c - 1) * (CW + GAP), lz = (r - 0.5) * (CH + GAP);
+    const lx = (c - 1) * (CW + GAP) * s;
+    const lz = (r - 0.5) * (CH + GAP) * s * spread;
     const cs = Math.cos(seat.yaw), sn = Math.sin(seat.yaw);
-    return { x: seat.pos.x + lx * cs + lz * sn, y: 0.02, z: seat.pos.z - lx * sn + lz * cs, yaw: seat.yaw, tilt: 0 };
+    const tilt = seat.tilt || 0;
+    // 绕牌中心立起后，近端会扎进桌面，把整张牌抬到近端刚好贴着桌面。
+    const lift = Math.max(0, Math.sin(tilt) * CH * s * 0.5);
+    return {
+      x: seat.pos.x + lx * cs + lz * sn,
+      y: 0.02 + lift,
+      z: seat.pos.z - lx * sn + lz * cs,
+      yaw: seat.yaw,
+      tilt,
+      scale: s,
+    };
+  }
+
+  _projectPx(v) {
+    const p = v.clone().project(this.camera);
+    const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
+    return { x: (p.x * 0.5 + 0.5) * w, y: (-p.y * 0.5 + 0.5) * h };
   }
 
   seatScreenPos(p) {
     const seat = this.seats[p];
     if (!seat) return null;
-    const out = seat.pos.clone().normalize().multiplyScalar(SEAT_R + 2.05);
-    out.y = 0.2;
-    out.project(this.camera);
-    const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
-    return { x: (out.x * 0.5 + 0.5) * w, y: (-out.y * 0.5 + 0.5) * h };
+    const radial = seat.pos.clone();
+    if (radial.lengthSq() < 1e-4) radial.set(0, 0, -1);
+    const extra = this._portrait ? 1.05 : 2.05;
+    const out = radial.normalize().multiplyScalar(seat.pos.length() + extra);
+    out.y = this._portrait ? 0.45 : 0.2;
+    return this._projectPx(out);
+  }
+
+  // 竖屏把名字牌放在该座位牌阵的上沿，避免压住牌。
+  seatAnchor(p) {
+    const seat = this.seats[p];
+    if (!seat) return null;
+    const pts = [];
+    const holder = new THREE.Object3D();
+    holder.rotation.order = 'YXZ';
+    for (let slot = 0; slot < 6; slot++) {
+      const pose = this.slotPose(p, slot);
+      holder.position.set(pose.x, pose.y, pose.z);
+      holder.rotation.set(pose.tilt || 0, pose.yaw, 0);
+      holder.scale.setScalar(pose.scale || 1);
+      holder.updateMatrixWorld(true);
+      for (const [lx, lz] of [[-CW / 2, -CH / 2], [CW / 2, -CH / 2], [CW / 2, CH / 2], [-CW / 2, CH / 2]]) {
+        pts.push(this._projectPx(holder.localToWorld(new THREE.Vector3(lx, 0, lz))));
+      }
+    }
+    const top = Math.min(...pts.map((q) => q.y));
+    const band = pts.filter((q) => q.y < top + 18);
+    const x = band.reduce((s, q) => s + q.x, 0) / band.length;
+    return { x, y: top };
   }
 
   // ---------- 牌 ----------
@@ -270,18 +395,21 @@ export class TableScene {
     for (const pl of state.players) for (const g of pl.grid) all.push(g.card);
     all.forEach((card, i) => {
       const e = this._makeCard(card, state.rules);
-      e.group.position.set(DECK_POS.x, DECK_POS.y + i * STACK_DY, DECK_POS.z);
+      const pile = this._pile || { x: 0.62, z: 0, scale: 1 };
+      e.group.position.set(-pile.x, DECK_POS.y + i * STACK_DY, pile.z);
       e.group.rotation.set(0, 0, Math.PI);
-      e.target = { x: DECK_POS.x, y: DECK_POS.y + i * STACK_DY, z: DECK_POS.z, yaw: 0, tilt: 0, flip: Math.PI };
+      e.group.scale.setScalar(pile.scale);
+      e.target = { x: -pile.x, y: DECK_POS.y + i * STACK_DY, z: pile.z, yaw: 0, tilt: 0, flip: Math.PI, scale: pile.scale };
     });
   }
 
   _poses(state) {
     const poses = new Map();
-    state.deck.forEach((c, i) => poses.set(c.id, { x: DECK_POS.x, y: DECK_POS.y + i * STACK_DY, z: DECK_POS.z, yaw: 0, tilt: 0, flip: Math.PI, order: i }));
+    const pile = this._pile || { x: 0.62, z: 0, scale: 1 };
+    state.deck.forEach((c, i) => poses.set(c.id, { x: -pile.x, y: DECK_POS.y + i * STACK_DY, z: pile.z, yaw: 0, tilt: 0, flip: Math.PI, order: i, scale: pile.scale }));
     state.discard.forEach((c, i) => {
       const j = ((c.id * 7919) % 100) / 100 - 0.5;
-      poses.set(c.id, { x: DISCARD_POS.x + j * 0.06, y: DISCARD_POS.y + i * STACK_DY, z: DISCARD_POS.z + j * 0.04, yaw: j * 0.25, tilt: 0, flip: 0, order: i });
+      poses.set(c.id, { x: pile.x + j * 0.06, y: DISCARD_POS.y + i * STACK_DY, z: pile.z + j * 0.04, yaw: j * 0.25, tilt: 0, flip: 0, order: i, scale: pile.scale });
     });
     state.players.forEach((pl, p) => pl.grid.forEach((g, slot) => {
       const ps = this.slotPose(p, slot);
@@ -289,11 +417,14 @@ export class TableScene {
     }));
     if (state.held) {
       const p = state.current;
-      if (p === 0) poses.set(state.held.id, { x: 0, y: 2.2, z: 2.1, yaw: 0, tilt: 0.6, flip: 0 });
-      else {
+      if (p === 0) {
+        poses.set(state.held.id, this._portrait
+          ? { x: 0, y: 2.15, z: 1.05, yaw: 0, tilt: 0.75, flip: 0, scale: 1.28 }
+          : { x: 0, y: 2.2, z: 2.1, yaw: 0, tilt: 0.6, flip: 0, scale: 1 });
+      } else {
         const seat = this.seats[p];
-        const v = seat.pos.clone().multiplyScalar(0.48);
-        poses.set(state.held.id, { x: v.x, y: 1.3, z: v.z, yaw: seat.yaw, tilt: 0.35, flip: 0 });
+        const v = seat.pos.clone().multiplyScalar(this._portrait ? 0.62 : 0.48);
+        poses.set(state.held.id, { x: v.x, y: this._portrait ? 1.15 : 1.3, z: v.z, yaw: seat.yaw, tilt: this._portrait ? 0.42 : 0.35, flip: 0, scale: Math.max(seat.scale || 1, this._portrait ? 0.9 : 1) });
       }
     }
     return poses;
@@ -309,10 +440,11 @@ export class TableScene {
       const e = this.cards.get(id);
       if (!e) continue;
       const t = e.target;
-      const same = t && Math.abs(t.x - pose.x) < 1e-4 && Math.abs(t.y - pose.y) < 1e-4 && Math.abs(t.z - pose.z) < 1e-4 && Math.abs(angDiff(t.yaw, pose.yaw)) < 1e-4 && t.flip === pose.flip && t.tilt === pose.tilt;
+      const poseScale = pose.scale ?? 1;
+      const same = t && Math.abs(t.x - pose.x) < 1e-4 && Math.abs(t.y - pose.y) < 1e-4 && Math.abs(t.z - pose.z) < 1e-4 && Math.abs(angDiff(t.yaw, pose.yaw)) < 1e-4 && t.flip === pose.flip && t.tilt === pose.tilt && Math.abs((t.scale ?? 1) - poseScale) < 1e-4;
       if (same) continue;
       const g = e.group;
-      const from = { x: g.position.x, y: g.position.y, z: g.position.z, yaw: g.rotation.y, tilt: g.rotation.x, flip: g.rotation.z };
+      const from = { x: g.position.x, y: g.position.y, z: g.position.z, yaw: g.rotation.y, tilt: g.rotation.x, flip: g.rotation.z, scale: g.scale.x };
       const dist = Math.hypot(pose.x - from.x, pose.z - from.z);
       const flipping = Math.abs(pose.flip - from.flip) > 0.01;
       const lift = Math.min(1.2, dist * 0.22) + (flipping ? 0.55 : 0);
@@ -342,6 +474,7 @@ export class TableScene {
       g.rotation.y = f.yaw + angDiff(f.yaw, to.yaw) * k;
       g.rotation.x = f.tilt + (to.tilt - f.tilt) * k;
       g.rotation.z = f.flip + (to.flip - f.flip) * k;
+      g.scale.setScalar(f.scale + ((to.scale ?? 1) - f.scale) * k);
       if (t >= 1) { e.tween = null; tw.resolve(); }
     }
     // 高亮脉冲
