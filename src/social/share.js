@@ -11,7 +11,8 @@ const fromB64Url = (s) => {
   return new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
 };
 
-// challenge = { v, seed, level, score, name, avatar, stars }
+// challenge = { v, seed, level, score, name, avatar, stars, daily?, streak? }
+// daily 是 'YYYY-MM-DD'（北京时间）。level = -1 表示每日挑战。
 export function encodeChallenge(ch) { return toB64Url(JSON.stringify(ch)); }
 export function decodeChallenge(code) {
   try {
@@ -19,6 +20,10 @@ export function decodeChallenge(code) {
     if (typeof o !== 'object' || o === null || typeof o.seed !== 'number' || typeof o.level !== 'number') return null;
     o.name = String(o.name ?? '神秘玩家').slice(0, 16);
     o.avatar = String(o.avatar ?? '🙂').slice(0, 4);
+    if (typeof o.daily === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.daily)) o.daily = o.daily;
+    else delete o.daily;
+    if (typeof o.streak === 'number' && Number.isFinite(o.streak)) o.streak = Math.max(0, Math.floor(o.streak));
+    else delete o.streak;
     return o;
   } catch { return null; }
 }
@@ -96,5 +101,44 @@ export function resultCardImage({ name, avatar, levelName, levelId, score, stars
   g.fillStyle = '#9fc5b0';
   g.font = '36px "Noto Sans CJK SC", sans-serif';
   g.fillText('同一副牌，来挑战我吧！', W / 2, 1240);
+  return cv.toDataURL('image/png');
+}
+
+export function dailyCardImage({ name, avatar, dateLabel, score, streak, bestStreak }) {
+  const W = 1080, H = 1350;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#0f5132'); grd.addColorStop(1, '#06281a');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  g.globalAlpha = 0.025;
+  for (let i = 0; i < 40; i++) { g.fillStyle = i % 2 ? '#fff' : '#000'; g.fillRect(0, i * 34, W, 17); }
+  g.globalAlpha = 1;
+  g.textAlign = 'center';
+  g.fillStyle = '#ffd166';
+  g.font = 'bold 64px "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.fillText('⛳ 高尔夫纸牌', W / 2, 150);
+  g.fillStyle = '#e9f5ee';
+  g.font = '48px "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.fillText(`每日挑战  ${dateLabel}`, W / 2, 250);
+  g.font = '140px "Noto Color Emoji", "Apple Color Emoji", sans-serif';
+  g.fillText(avatar || '⛳', W / 2, 460);
+  g.fillStyle = '#fff';
+  g.font = 'bold 56px "Noto Sans CJK SC", "PingFang SC", sans-serif';
+  g.fillText(name || '', W / 2, 540);
+  g.fillStyle = '#ffd166';
+  g.font = 'bold 200px "Noto Sans CJK SC", sans-serif';
+  g.fillText(String(score), W / 2, 820);
+  g.font = '40px "Noto Sans CJK SC", sans-serif';
+  g.fillStyle = '#cfe8d8';
+  g.fillText('今日得分（越低越好）', W / 2, 890);
+  g.fillStyle = '#ffe8a3';
+  g.font = 'bold 64px "Noto Sans CJK SC", "Noto Color Emoji", sans-serif';
+  g.fillText(`连续 ${streak} 天 🔥`, W / 2, 1040);
+  g.fillStyle = '#9fc5b0';
+  g.font = '40px "Noto Sans CJK SC", sans-serif';
+  g.fillText(`最佳连续 ${bestStreak} 天`, W / 2, 1110);
+  g.fillText('同一副牌，你也来打今天的挑战', W / 2, 1240);
   return cv.toDataURL('image/png');
 }

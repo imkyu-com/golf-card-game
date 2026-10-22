@@ -4,9 +4,13 @@ import * as R from './game/rules.js';
 import * as AI from './game/ai.js';
 import { mulberry32, hashSeed, randomSeed } from './game/rng.js';
 import { LEVELS, AI_NAMES, getLevel, starsFor } from './game/levels.js';
+import { newColumnPairs, pairFloaterLabel, resultFeedback } from './game/feedback.js';
+import {
+  DAILY_TIMEZONE, dailyDateKey, dailySeed, dailyShareText, formatLongDate, formatShareDate, monthCells,
+} from './game/daily.js';
 import { LocalBackend } from './social/backend.js';
-import { challengeUrl, readChallengeFromUrl, resultText, resultCardImage } from './social/share.js';
-import { sfx, setSoundEnabled, unlockAudio } from './audio.js';
+import { challengeUrl, readChallengeFromUrl, resultText, resultCardImage, dailyCardImage } from './social/share.js';
+import { sfx, setSoundEnabled, unlockAudio, haptic, isSoundEnabled } from './audio.js';
 
 // ---------------------------------------------------------------- 基础
 const backend = new LocalBackend(); // 以后替换为 RemoteBackend 即可接入真实服务端
@@ -27,6 +31,76 @@ function toast(msg, cls = '') {
   const box = document.getElementById('toast'); box.innerHTML = ''; box.appendChild(t);
   setTimeout(() => t.remove(), 2300);
 }
+const fxLayer = document.createElement('div');
+fxLayer.id = 'fx';
+document.body.appendChild(fxLayer);
+const isCampaign = (level) => level.id > 0;
+const motionOk = () => !(typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+function snapGrids(s) {
+  return s.players.map((pl) => pl.grid.map((g) => ({ card: g.card, up: g.up })));
+}
+function chipAnchor(player) {
+  if (player === 0) {
+    const el = document.getElementById('mechip');
+    if (el && el.getBoundingClientRect().width) {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+  } else {
+    const el = labels.querySelectorAll('.label-abs')[player - 1];
+    if (el) {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+  }
+  return { x: window.innerWidth / 2, y: 78 };
+}
+function spawnFloater(text, from, to, { delay = 0, good = true } = {}) {
+  const el = document.createElement('div');
+  el.className = `score-floater ${good ? 'good' : 'bad'}`;
+  el.textContent = text;
+  fxLayer.appendChild(el);
+  const anim = el.animate([
+    { transform: `translate(${from.x}px, ${from.y}px) translate(-50%, -50%) scale(.55)`, opacity: 0 },
+    { transform: `translate(${from.x}px, ${from.y - 34}px) translate(-50%, -50%) scale(1.18)`, opacity: 1, offset: 0.22 },
+    { transform: `translate(${to.x}px, ${to.y}px) translate(-50%, -50%) scale(.45)`, opacity: 0 },
+  ], { duration: 780, delay, easing: 'cubic-bezier(.2,.7,.2,1)', fill: 'forwards' });
+  anim.onfinish = () => el.remove();
+}
+// 新凑成的对子：一声、两张牌闪光、抵消的分数飞向计分牌。不 await，不拉长回合。
+function playPairJuice(s, beforeSnaps) {
+  const groups = [];
+  s.players.forEach((pl, i) => {
+    if (!beforeSnaps[i]) return;
+    const found = newColumnPairs(beforeSnaps[i], pl.grid, s.rules);
+    if (found.pairs.length || found.bonusDelta) groups.push({ player: i, ...found });
+  });
+  if (!groups.some((g) => g.pairs.length)) return;
+  sfx.pair();
+  haptic();
+  if (isSoundEnabled() && motionOk()) scene.shake(0.2);
+  scene.celebrateCards(groups.flatMap((g) => g.pairs.flatMap((p) => p.ids)));
+  for (const g of groups) {
+    const to = chipAnchor(g.player);
+    g.pairs.forEach((p, idx) => {
+      const label = pairFloaterLabel(p.cancelled);
+      const a = scene.cardScreenPos(p.ids[0]);
+      const b = scene.cardScreenPos(p.ids[1]);
+      if (!label || !a || !b) return;
+      spawnFloater(label, { x: (a.x + b.x) / 2 + idx * 18, y: (a.y + b.y) / 2 }, to, { delay: idx * 40, good: p.cancelled > 0 });
+    });
+    if (g.bonusDelta && g.pairs[0]) {
+      const a = scene.cardScreenPos(g.pairs[0].ids[0]);
+      if (a) spawnFloater(`四条${g.bonusDelta}`, { x: a.x, y: a.y - 26 }, to, { delay: 70, good: g.bonusDelta < 0 });
+    }
+  }
+}
+function noteAction(s, before) {
+  if (s.phase === 'over') { s._revealBaseline = before; return; }
+  playPairJuice(s, before);
+}
+
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
@@ -103,6 +177,7 @@ function renderHome() {
     <div class="sub">翻牌、换牌、凑对子 —— 总分越低越好</div>
     <div class="profile-chip" id="prof"><span class="av">${p.avatar}</span><span><b>${esc(p.name)}</b><br/><span class="stars-total">★ ${backend.totalStars()} / ${LEVELS.length * 3}</span></span></div>
     <div class="menu">
+      <button class="btn daily" id="daily">📅 每日挑战${backend.getDailyState().done ? '' : '<span class="badge">未完成</span>'}</button>
       <button class="btn" id="play">🏌️ 闯关模式</button>
       <button class="btn green" id="quick">🎲 自由对局</button>
       <button class="btn secondary" id="lb">🏆 排行榜</button>
@@ -110,6 +185,7 @@ function renderHome() {
     </div>
     <div class="row center"><button class="icon-btn" id="snd">${backend.getSettings().sound !== false ? '🔊' : '🔇'}</button></div>
   </div>`));
+  el.querySelector('#daily').onclick = () => { sfx.click(); renderDaily(); };
   el.querySelector('#play').onclick = () => { sfx.click(); renderMap(); };
   el.querySelector('#quick').onclick = () => { sfx.click(); startMatch(0, {}); };
   el.querySelector('#lb').onclick = () => { sfx.click(); renderLeaderboard(); };
@@ -187,6 +263,7 @@ function renderRules(onDone) {
       <div>A<small>1 分</small></div><div>2<small>-2 分</small></div><div>3~10<small>牌面分</small></div><div>J / Q<small>10 分</small></div><div>K<small>0 分</small></div><div>★王<small>-2 分</small></div></div>
     <h3>⭐ 闯关</h3><p>每关打若干局，累计总分最低即获胜。赢下得 1 星，总分低于目标再拿 2、3 星。通关解锁下一关，后面会有更多对手和特殊规则（王牌、只翻 1 张、K 变 12 分、四条奖励…）。</p>
     <h3>🤝 挑战好友</h3><p>结算时点「挑战好友」会生成一个链接，里面包含这一关的<b>同一副牌</b>和你的分数。好友打开后用同样的发牌比拼分数，对方成绩也会进入你本机的排行榜。</p>
+    <h3>📅 每日挑战</h3><p>按<b>北京时间</b>每天一副牌，所有人相同。当天第一次打完才记分，并累计连续天数。同一天再打是练习，不改成绩。</p>
     <div class="row center"><button class="btn" id="ok">明白了</button></div>
   </div></div>`));
   el.querySelector('#ok').onclick = () => { sfx.click(); el.remove(); onDone && onDone(); };
@@ -208,7 +285,7 @@ function renderLeaderboard() {
     const me = profile();
     el.querySelector('#list').innerHTML = list.length ? list.map((s, i) => `<div class="lb-item"><div class="rk">${i + 1}</div><div class="av">${s.avatar}</div>
       <div class="nm">${esc(s.name)}${s.source === 'friend' ? '<span class="tag friend">好友挑战</span>' : s.name === me.name ? '<span class="tag">我</span>' : ''}
-      <div class="muted">${s.levelId ? `第 ${s.levelId} 关` : '自由对局'} · ${new Date(s.date).toLocaleDateString('zh-CN')} · <span style="color:#ffd166">${'★'.repeat(s.stars || 0)}</span></div></div>
+      <div class="muted">${s.levelId > 0 ? `第 ${s.levelId} 关` : s.levelId === -1 ? '每日挑战' : '自由对局'} · ${new Date(s.date).toLocaleDateString('zh-CN')} · <span style="color:#ffd166">${'★'.repeat(s.stars || 0)}</span></div></div>
       <div class="sc">${s.score}</div></div>`).join('') : '<p class="muted" style="text-align:center">还没有成绩，快去打一局吧！</p>';
   };
   el.querySelector('#lv').onchange = (e) => { sel = e.target.value; draw(); };
@@ -219,13 +296,13 @@ function renderLeaderboard() {
 // ---------------------------------------------------------------- 对局
 let match = null;
 
-async function startMatch(levelId, { seed, challenge } = {}) {
+async function startMatch(levelId, { seed, challenge, daily } = {}) {
   abortAll();
   const tk = token;
   const level = getLevel(levelId);
   const me = profile();
   match = {
-    level, seed: seed ?? randomSeed(), challenge, hole: 0, tk,
+    level, seed: seed ?? randomSeed(), challenge, daily: daily || null, hole: 0, tk,
     players: [{ name: me.name, avatar: me.avatar, human: true }, ...level.opponents.map((o) => ({ ...AI_NAMES[o.ai], ai: o.level }))],
     totals: [], holeScores: [],
   };
@@ -245,12 +322,23 @@ async function startMatch(levelId, { seed, challenge } = {}) {
   }
 }
 
+function hudTitle(level) {
+  if (level.daily) return '每日挑战';
+  return `${level.id ? `第 ${level.id} 关 · ` : ''}${esc(level.name)}`;
+}
+function hudSub() {
+  const { level, hole, daily, challenge } = match;
+  const bits = [`第 ${hole + 1} / ${level.holes} 局`];
+  if (daily) bits.push(formatShareDate(daily.date) + (daily.practice ? ' · 练习' : ''));
+  if (challenge) bits.push(`挑战 ${challenge.name}（${challenge.score} 分）`);
+  return bits.join(' · ');
+}
 function renderHud() {
-  const { level, hole } = match;
+  const { level } = match;
   const el = show(h(`<div>
     <div class="hud-top">
       <button class="icon-btn" id="menu">☰</button>
-      <div class="hud-title"><b>${level.id ? `第 ${level.id} 关 · ` : ''}${esc(level.name)}</b><small>第 ${hole + 1} / ${level.holes} 局${match.challenge ? ` · 挑战 ${esc(match.challenge.name)}（${match.challenge.score} 分）` : ''}</small></div>
+      <div class="hud-title"><b>${hudTitle(level)}</b><small>${esc(hudSub())}</small></div>
       <button class="icon-btn" id="help">?</button>
     </div>
     <div class="me-chip" id="mechip"></div>
@@ -261,10 +349,13 @@ function renderHud() {
     sfx.click();
     const m = modal(h(`<div class="overlay"><div class="panel" style="width:min(340px,100%)"><h2>暂停</h2><div class="col">
       <button class="btn" id="c">继续游戏</button><button class="btn secondary" id="r">重新开始本关</button>
-      <button class="btn secondary" id="m">返回${match.level.id ? '地图' : '首页'}</button></div></div></div>`));
+      <button class="btn secondary" id="m">返回${match.level.daily ? '每日挑战' : match.level.id ? '地图' : '首页'}</button></div></div></div>`));
     m.querySelector('#c').onclick = () => m.remove();
-    m.querySelector('#r').onclick = () => startMatch(match.level.id, { seed: match.challenge ? match.seed : undefined, challenge: match.challenge });
-    m.querySelector('#m').onclick = () => (match.level.id ? renderMap() : renderHome());
+    m.querySelector('#r').onclick = () => {
+      if (match.daily) startDaily({ practice: !!match.daily.practice });
+      else startMatch(match.level.id, { seed: match.challenge ? match.seed : undefined, challenge: match.challenge });
+    };
+    m.querySelector('#m').onclick = () => (match.level.daily ? renderDaily() : match.level.id ? renderMap() : renderHome());
   };
 }
 
@@ -330,18 +421,22 @@ async function playHole(hIdx, tk) {
   if (tk !== token) throw ABORT;
 
   // AI 开局翻牌
+  const beforeAiFlip = snapGrids(s);
   for (let p = 1; p < n; p++) {
     for (const slot of AI.chooseInitialFlips(s, p, aiRng[p])) R.initialFlip(s, p, slot);
   }
   sfx.flip();
   await scene.layout(s);
+  playPairJuice(s, beforeAiFlip);
   // 玩家开局翻牌
   while (s.players[0].flipsLeft > 0) {
     setHint(`点击你面前的牌，翻开 ${s.players[0].flipsLeft} 张`, true);
     const hit = await waitPick({ slots: R.faceDownSlots(s.players[0]) }, tk);
+    const beforeFlip = snapGrids(s);
     R.initialFlip(s, 0, hit.slot);
     sfx.flip();
     await scene.layout(s);
+    playPairJuice(s, beforeFlip);
   }
   let warned = false;
   while (s.phase !== 'over') {
@@ -362,15 +457,10 @@ async function playHole(hIdx, tk) {
   setHint('亮牌计分…');
   sfx.flip();
   await scene.layout(s, { stagger: 0.02 });
-  if (finalScores.some((sc) => sc.columns.some((c) => c.paired))) sfx.pair();
+  if (s._revealBaseline) playPairJuice(s, s._revealBaseline);
   updateLabels(s);
   await sleep(1600, tk);
   return finalScores.map((x) => x.total);
-}
-
-function columnPairedAfter(s, p, slot) {
-  const sc = R.scoreGrid(s.players[p].grid, s.rules, true);
-  return sc.columns.some((c) => c.paired && c.slots.includes(slot));
 }
 
 function formatCols(sc) {
@@ -381,6 +471,7 @@ function formatCols(sc) {
 
 async function humanTurn(s, tk) {
   const all = [0, 1, 2, 3, 4, 5];
+  const before = snapGrids(s);
   for (;;) {
     if (tk !== token) throw ABORT;
     const top = s.discard[s.discard.length - 1];
@@ -412,7 +503,7 @@ async function humanTurn(s, tk) {
       R.swapHeld(s, choice.slot);
       sfx.place();
       await scene.layout(s);
-      if (columnPairedAfter(s, 0, choice.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
+      noteAction(s, before);
     } else {
       R.discardHeld(s);
       sfx.place();
@@ -423,8 +514,8 @@ async function humanTurn(s, tk) {
         R.flipAfterDiscard(s, f.slot);
         sfx.flip();
         await scene.layout(s);
-        if (columnPairedAfter(s, 0, f.slot)) { sfx.pair(); toast('配对成功！这一列 0 分', 'info'); }
       }
+      noteAction(s, before);
     }
     return;
   }
@@ -432,6 +523,7 @@ async function humanTurn(s, tk) {
 
 async function aiTurn(s, p, rng, tk) {
   const pl = match.players[p];
+  const before = snapGrids(s);
   setHint(`${pl.avatar} ${pl.name} 思考中…`);
   await sleep(450 + rng() * 350, tk);
   const src = AI.chooseDraw(s, p, pl.ai, rng);
@@ -445,7 +537,6 @@ async function aiTurn(s, p, rng, tk) {
     R.swapHeld(s, d.slot);
     sfx.place();
     await scene.layout(s);
-    if (columnPairedAfter(s, p, d.slot)) sfx.pair();
   } else {
     R.discardHeld(s);
     sfx.place();
@@ -457,6 +548,7 @@ async function aiTurn(s, p, rng, tk) {
       await scene.layout(s);
     }
   }
+  noteAction(s, before);
   await sleep(200, tk);
 }
 
@@ -475,42 +567,75 @@ function holeResult(scores, last, tk) {
 }
 
 function matchResult() {
-  const { level, totals, players, seed, challenge } = match;
+  const { level, totals, players, seed, challenge, daily } = match;
   labelState = null; labels.innerHTML = '';
   const my = totals[0];
   const won = totals.every((t, i) => i === 0 || my <= t);
   const stars = starsFor(level, my, won);
   const me = profile();
+  const bestOpponent = totals.length > 1 ? Math.min(...totals.slice(1)) : null;
+  const dailyBefore = daily ? backend.getDailyState() : null;
   let prevStars = 0;
-  if (level.id) { prevStars = backend.getProgress()[level.id]?.stars || 0; backend.saveLevelResult(level.id, { stars, score: my }); }
-  backend.submitScore({ name: me.name, avatar: me.avatar, levelId: level.id, score: my, stars, seed, source: 'self' });
+  let previousBest = null;
+  let dailyRec = null;
+  if (isCampaign(level)) {
+    previousBest = backend.getProgress()[level.id]?.best ?? null;
+    prevStars = backend.getProgress()[level.id]?.stars || 0;
+    backend.saveLevelResult(level.id, { stars, score: my });
+    backend.submitScore({ name: me.name, avatar: me.avatar, levelId: level.id, score: my, stars, seed, source: 'self' });
+  } else if (!level.daily) {
+    previousBest = backend.getBest('quick');
+    backend.rememberBest('quick', my);
+    backend.submitScore({ name: me.name, avatar: me.avatar, levelId: level.id, score: my, stars, seed, source: 'self' });
+  } else if (daily && !daily.practice) {
+    previousBest = dailyBefore.bestScore;
+    dailyRec = backend.recordDailyResult({ date: daily.date, score: my, seed, name: me.name, avatar: me.avatar });
+  } else if (dailyBefore) {
+    previousBest = dailyBefore.bestScore;
+  }
+  const feedback = resultFeedback({ level, my, won, bestOpponent, previousBest });
+  const nearLines = feedback.lines;
+  const pbLine = daily && daily.practice
+    ? (dailyBefore.today ? `练习局，不记分 · 今日成绩 ${dailyBefore.today.score} 分` : '练习局，不计入成绩和连续天数')
+    : feedback.personalBest;
+  const streak = dailyRec?.streak || dailyBefore?.streak;
   won ? sfx.win() : sfx.lose();
   const ch = { v: 1, seed, level: level.id, score: my, name: me.name, avatar: me.avatar, stars };
   const url = challengeUrl(ch);
   const order = players.map((p, i) => ({ ...p, total: totals[i], i })).sort((a, b) => a.total - b.total);
-  const nextLv = LEVELS.find((l) => l.id === level.id + 1);
+  const nextLv = isCampaign(level) ? LEVELS.find((l) => l.id === level.id + 1) : null;
   let vs = '';
   if (challenge) {
     const res = my < challenge.score ? '🎉 你赢了好友！' : my === challenge.score ? '🤝 打平了！' : '😅 好友更胜一筹';
     vs = `<div class="vs">同一副牌对决：你 <b>${my}</b> 分 vs ${challenge.avatar} ${esc(challenge.name)} <b>${challenge.score}</b> 分<br/><b>${res}</b></div>`;
   }
+  const title = daily
+    ? (daily.practice ? '练习结束' : '📅 每日挑战完成')
+    : (won ? '🏆 胜利！' : '惜败…');
+  const officialScore = daily ? (dailyRec?.today?.score ?? dailyBefore?.today?.score ?? null) : null;
+  const shareStreak = streak?.current ?? 0;
   const el = show(h(`<div class="overlay"><div class="panel">
-    <p class="result-title" style="color:${won ? '#7ee787' : '#ff9b9b'}">${won ? '🏆 胜利！' : '惜败…'}</p>
+    <p class="result-title" style="color:${won ? '#7ee787' : '#ff9b9b'}">${title}</p>
     <div class="bigstars">${[0, 1, 2].map((i) => `<span style="animation-delay:${0.2 + i * 0.25}s" class="${i < stars ? '' : 'star-off'}">★</span>`).join('')}</div>
-    ${level.id && stars > prevStars && prevStars > 0 ? '<p style="text-align:center;color:#ffd166">新纪录！</p>' : ''}
+    ${nearLines.map((t) => `<div class="near-miss">${t}</div>`).join('')}
+    ${isCampaign(level) && stars > prevStars && prevStars > 0 ? '<p style="text-align:center;color:#ffd166">星级提升！</p>' : ''}
+    <p class="pb-line">${pbLine}</p>
+    ${streak ? `<p class="streak-line">连续 ${streak.current} 天 🔥 · 最佳连续 ${streak.best} 天</p>` : ''}
     ${vs}
     <table class="score"><tr><th>名次</th><th>玩家</th><th>总分</th></tr>${order.map((p, r) => `<tr class="${r === 0 ? 'best' : ''} ${p.i === 0 ? 'me' : ''}"><td>${r + 1}</td><td><span class="who">${p.avatar} ${esc(p.name)}</span></td><td>${p.total}</td></tr>`).join('')}</table>
-    ${level.id ? `<p class="muted" style="text-align:center">★★ 需 ≤ ${level.t2} 分 · ★★★ 需 ≤ ${level.t3} 分</p>` : ''}
+    <p class="muted" style="text-align:center">★★ 需 ≤ ${level.t2} 分 · ★★★ 需 ≤ ${level.t3} 分</p>
     <div class="col">
-      <div class="row center"><button class="btn green" id="chal">🤝 挑战好友</button><button class="btn green" id="share">📸 分享战绩</button></div>
+      <button class="btn xl" id="again">再来一局</button>
+      ${daily ? '<p class="muted" style="text-align:center;margin:-6px 0 0">再来一局只练习，不改今日成绩，也不增加连续天数。</p>' : ''}
       <div class="row center">
-        <button class="btn secondary" id="again">🔄 再来一次</button>
-        ${level.id && nextLv && backend.isUnlocked(nextLv.id) ? '<button class="btn" id="next">下一关 →</button>' : ''}
+        ${daily ? (officialScore == null ? '' : '<button class="btn green" id="share">📤 分享今日成绩</button>') : '<button class="btn green" id="chal">🤝 挑战好友</button><button class="btn green" id="share">📸 分享战绩</button>'}
+        ${nextLv && backend.isUnlocked(nextLv.id) ? '<button class="btn" id="next">下一关 →</button>' : ''}
       </div>
-      <div class="row center"><button class="btn secondary small" id="map">${level.id ? '返回地图' : '返回首页'}</button><button class="btn secondary small" id="lb">排行榜</button></div>
+      <div class="row center"><button class="btn secondary small" id="map">${daily ? '返回每日挑战' : isCampaign(level) ? '返回地图' : '返回首页'}</button><button class="btn secondary small" id="lb">排行榜</button></div>
     </div></div></div>`));
   stars && [0, 1, 2].slice(0, stars).forEach((i) => setTimeout(() => sfx.star(i), 300 + i * 250));
-  el.querySelector('#chal').onclick = async () => {
+  const chal = el.querySelector('#chal');
+  if (chal) chal.onclick = async () => {
     sfx.click();
     const text = resultText({ name: me.name, levelName: level.name, levelId: level.id, score: my, stars, won, url });
     const ok = await copyText(text);
@@ -522,8 +647,19 @@ function matchResult() {
     const sys = m.querySelector('#sys');
     if (sys) sys.onclick = () => navigator.share({ title: '3D 高尔夫纸牌挑战', text, url }).catch(() => {});
   };
-  el.querySelector('#share').onclick = () => {
+  const shareBtn = el.querySelector('#share');
+  if (shareBtn) shareBtn.onclick = () => {
     sfx.click();
+    if (daily) {
+      openDailyShare({
+        date: daily.date,
+        score: officialScore,
+        streak: shareStreak,
+        bestStreak: streak?.best ?? shareStreak,
+        seed,
+      });
+      return;
+    }
     const img = resultCardImage({ name: me.name, avatar: me.avatar, levelName: level.name, levelId: level.id, score: my, stars, won, players: order });
     const text = resultText({ name: me.name, levelName: level.name, levelId: level.id, score: my, stars, won, url });
     const m = modal(h(`<div class="overlay"><div class="panel"><h2>📸 战绩卡</h2>
@@ -533,17 +669,111 @@ function matchResult() {
     m.querySelector('#cp').onclick = async () => { toast((await copyText(text)) ? '已复制战绩文字' : '复制失败', 'info'); };
     m.querySelector('#x').onclick = () => m.remove();
   };
-  el.querySelector('#again').onclick = () => { sfx.click(); startMatch(level.id, {}); };
+  el.querySelector('#again').onclick = () => {
+    sfx.click();
+    if (daily) startDaily({ practice: true });
+    else startMatch(level.id, {});
+  };
   const nx = el.querySelector('#next');
   if (nx) nx.onclick = () => { sfx.click(); levelInfo(nextLv); };
-  el.querySelector('#map').onclick = () => { sfx.click(); level.id ? renderMap() : renderHome(); };
+  el.querySelector('#map').onclick = () => { sfx.click(); daily ? renderDaily() : isCampaign(level) ? renderMap() : renderHome(); };
   el.querySelector('#lb').onclick = () => { sfx.click(); renderLeaderboard(); };
+}
+
+// ---------------------------------------------------------------- 每日挑战
+function startDaily({ practice = false } = {}) {
+  const state = backend.getDailyState();
+  startMatch(-1, {
+    seed: dailySeed(state.date),
+    daily: { date: state.date, practice: practice || state.done },
+  });
+}
+
+function calendarHtml(state) {
+  const { year, month, cells } = monthCells(state.date);
+  const playedKeys = Object.keys(state.history).filter((k) => state.history[k]?.official).sort();
+  const first = playedKeys[0];
+  const dows = ['一', '二', '三', '四', '五', '六', '日'].map((d) => `<div class="cal-dow">${d}</div>`).join('');
+  const body = cells.map((cell) => {
+    if (!cell) return '<div class="cal-day pad"></div>';
+    const row = state.history[cell.key];
+    const played = !!(row && row.official);
+    const missed = !!(first && !cell.future && !cell.today && cell.key > first && cell.key < state.date && !played);
+    const cls = ['cal-day', played ? 'played' : '', cell.today ? 'today' : '', cell.future ? 'future' : '', missed ? 'miss' : ''].filter(Boolean).join(' ');
+    return `<div class="${cls}">${cell.day}${played ? `<small>${row.score}</small>` : ''}</div>`;
+  }).join('');
+  return `<div class="cal-title">${year}年${month}月</div><div class="cal">${dows}${body}</div>`;
+}
+
+function dailyBoardHtml(date) {
+  const board = backend.getDailyLeaderboard({ date });
+  if (board.available && board.entries?.length) {
+    return board.entries.map((s, i) => `<div class="lb-item"><div class="rk">${s.rank ?? i + 1}</div><div class="av">${esc(s.avatar || '⛳')}</div><div class="nm">${esc(s.name)}</div><div class="sc">${s.score}</div></div>`).join('');
+  }
+  return '<p class="muted">全球每日排行榜即将上线。接入服务器后，今天的成绩会从这里提交并显示名次。</p>';
+}
+
+function openDailyShare({ date, score, streak, bestStreak, seed }) {
+  const me = profile();
+  const payload = { v: 1, seed: seed || dailySeed(date), level: -1, score, name: me.name, avatar: me.avatar, stars: 0, daily: date, streak };
+  const url = challengeUrl(payload);
+  const text = dailyShareText({ dateKey: date, score, streak, url });
+  const img = dailyCardImage({
+    name: me.name, avatar: me.avatar, dateLabel: formatShareDate(date), score, streak, bestStreak,
+  });
+  const m = modal(h(`<div class="overlay"><div class="panel"><h2>📤 分享每日挑战</h2>
+    <img class="share-img" src="${img}" alt="每日挑战分享卡" />
+    <p class="share-copy">${esc(text)}</p>
+    <div class="row center"><a class="btn green" href="${img}" download="golf-daily-${date}.png" style="text-decoration:none">下载图片</a>
+    <button class="btn" id="cp">复制文字</button>${navigator.share ? '<button class="btn secondary" id="sys">系统分享</button>' : ''}<button class="btn secondary" id="x">关闭</button></div></div></div>`));
+  m.querySelector('#cp').onclick = async () => { toast((await copyText(text)) ? '已复制分享文字' : '复制失败', 'info'); };
+  m.querySelector('#x').onclick = () => m.remove();
+  const sys = m.querySelector('#sys');
+  if (sys) sys.onclick = () => navigator.share({ title: '高尔夫纸牌每日挑战', text, url }).catch(() => {});
+}
+
+function renderDaily() {
+  abortAll();
+  demoTable();
+  const state = backend.getDailyState();
+  const el = show(h(`<div class="overlay"><div class="panel daily-panel">
+    <h2>📅 每日挑战</h2>
+    <p class="muted" style="text-align:center">${formatLongDate(state.date)} · 按北京时间换日<br/>全世界同一副牌。当天第一次成绩才会计入连续天数。</p>
+    <div class="daily-stats">
+      <div class="daily-stat"><b>${state.today ? state.today.score : '—'}</b><span>今日得分</span></div>
+      <div class="daily-stat"><b>${state.streak.current}</b><span>连续天数</span></div>
+      <div class="daily-stat"><b>${state.streak.best}</b><span>最佳连续</span></div>
+    </div>
+    ${state.bestScore == null ? '' : `<p class="pb-line">历史最佳 ${state.bestScore} 分</p>`}
+    ${calendarHtml(state)}
+    <div id="daily-board">${dailyBoardHtml(state.date)}</div>
+    <div class="col">
+      ${state.done
+        ? '<button class="btn secondary" id="go">再练一局</button><button class="btn green" id="share">📤 分享今日成绩</button>'
+        : '<button class="btn xl" id="go">开始今日挑战</button>'}
+      <button class="btn secondary" id="back">返回首页</button>
+    </div>
+  </div></div>`));
+  el.querySelector('#go').onclick = () => { sfx.click(); unlockAudio(); startDaily({ practice: state.done }); };
+  el.querySelector('#back').onclick = () => { sfx.click(); renderHome(); };
+  const share = el.querySelector('#share');
+  if (share) share.onclick = () => {
+    sfx.click();
+    openDailyShare({
+      date: state.date,
+      score: state.today.score,
+      streak: state.streak.current,
+      bestStreak: state.streak.best,
+      seed: state.today.seed,
+    });
+  };
 }
 
 // ---------------------------------------------------------------- 好友挑战入口
 function challengeIntro(ch) {
   const lv = getLevel(ch.level);
   if (!lv) return false;
+  if (lv.daily) return dailyChallengeIntro(ch);
   backend.recordChallenge(ch);
   const el = modal(h(`<div class="overlay"><div class="panel" style="text-align:center">
     <div style="font-size:64px">${esc(ch.avatar)}</div>
@@ -556,6 +786,71 @@ function challengeIntro(ch) {
   return true;
 }
 
+function dailyChallengeIntro(ch) {
+  const today = dailyDateKey();
+  const canonical = ch.daily === today && ch.seed === dailySeed(today);
+  const state = backend.getDailyState();
+  backend.recordChallenge(ch);
+  const practice = !canonical || state.done;
+  const el = modal(h(`<div class="overlay"><div class="panel" style="text-align:center">
+    <div style="font-size:64px">${esc(ch.avatar)}</div>
+    <h2>${esc(ch.name)} 的每日挑战</h2>
+    <p>${ch.daily ? formatLongDate(ch.daily) : '同一副牌'}<br/>TA 的成绩：<b style="color:#ffd166;font-size:22px">${ch.score}</b> 分${ch.streak ? ` · 连续 ${ch.streak} 天` : ''}</p>
+    <p class="muted">${canonical ? (state.done ? '你今天已经记过分了，再打一局只作练习。' : '这就是今天的牌。打完会计入你的每日成绩。') : '这不是今天的正式挑战，这一局只作练习。'}</p>
+    <div class="row center"><button class="btn secondary" id="later">稍后再说</button><button class="btn" id="go">${practice ? '练习这一局' : '接受挑战'}</button></div></div></div>`));
+  el.querySelector('#later').onclick = () => { sfx.click(); el.remove(); };
+  el.querySelector('#go').onclick = () => {
+    sfx.click(); unlockAudio();
+    startMatch(-1, {
+      seed: ch.seed,
+      challenge: ch,
+      daily: { date: canonical ? today : (ch.daily || today), practice },
+    });
+  };
+  return true;
+}
+
+async function demoPairJuice() {
+  abortAll();
+  const s = R.createHole({ seed: 1, numPlayers: 2, rules: { startFlips: 0 } });
+  const paint = (card, rank, suit) => { card.rank = rank; card.suit = suit; };
+  paint(s.players[0].grid[0].card, 10, 'H');
+  paint(s.players[0].grid[3].card, 4, 'S');
+  paint(s.deck[s.deck.length - 1], 10, 'D');
+  for (const pl of s.players) for (const g of pl.grid) g.up = true;
+  const me = profile() || { name: 'Kenny', avatar: '😎' };
+  match = {
+    level: getLevel(1), seed: 1, challenge: null, daily: null, hole: 0,
+    players: [{ name: me.name, avatar: me.avatar, human: true }, { ...AI_NAMES[0], ai: 'easy' }],
+    totals: [0, 0], holeScores: [],
+  };
+  scene.setupSeats(2);
+  renderHud();
+  labelState = s;
+  scene.setupHole(s);
+  await scene.layout(s, { duration: 0.05 });
+  updateLabels(s);
+  const before = snapGrids(s);
+  R.drawFromDeck(s);
+  R.swapHeld(s, 3);
+  await scene.layout(s, { duration: 0.2 });
+  updateLabels(s);
+  playPairJuice(s, before);
+  setHint('这一列凑成一对', true);
+}
+
+function demoResult() {
+  abortAll();
+  const me = profile() || { name: 'Kenny', avatar: '😎' };
+  if (backend.getProgress()[1]?.best == null) backend.saveLevelResult(1, { stars: 1, score: 14 });
+  match = {
+    level: getLevel(1), seed: 99, challenge: null, daily: null, hole: 0,
+    players: [{ name: me.name, avatar: me.avatar, human: true }, { ...AI_NAMES[0], ai: 'easy' }],
+    totals: [8, 10], holeScores: [[8, 10]],
+  };
+  matchResult();
+}
+
 // ---------------------------------------------------------------- 启动
 (async function boot() {
   const ch = readChallengeFromUrl();
@@ -563,5 +858,9 @@ function challengeIntro(ch) {
   if (!profile()) { demoTable(); await profileModal(true); }
   renderHome();
   if (ch) challengeIntro(ch);
-  window.__golf = { backend, scene, R, get match() { return match; } }; // 调试/测试用
+  window.__golf = {
+    backend, scene, R, DAILY_TIMEZONE,
+    get match() { return match; },
+    renderDaily, startDaily, demoPairJuice, demoResult,
+  };
 })();

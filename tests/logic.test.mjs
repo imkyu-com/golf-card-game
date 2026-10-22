@@ -5,6 +5,10 @@ import * as AI from '../src/game/ai.js';
 import { mulberry32, hashSeed } from '../src/game/rng.js';
 import { LEVELS, starsFor } from '../src/game/levels.js';
 import { encodeChallenge, decodeChallenge, challengeUrl, pageBase } from '../src/social/share.js';
+import {
+  addDays, applyDailyResult, computeStreak, dailyDateKey, dailyHoleSeed, dailySeed, dailyShareText,
+} from '../src/game/daily.js';
+import { newColumnPairs, pairFloaterLabel, resultFeedback } from '../src/game/feedback.js';
 
 const c = (rank, suit = 'S') => ({ id: Math.random(), rank, suit });
 const grid = (ranks) => ranks.map((r) => ({ card: c(r), up: true }));
@@ -389,4 +393,137 @@ test('challenge url uses the page origin and path', () => {
   const url = challengeUrl(ch, pageBase(pages));
   assert.equal(url.startsWith('https://kenysai.github.io/golf-card-game/#c='), true);
   assert.deepEqual(decodeChallenge(url.slice(url.indexOf('#c=') + 3)), ch);
+});
+
+test('daily seed is the Asia/Shanghai date, and the deal does not change', () => {
+  // 北京时间 = UTC+8，没有夏令时。15:59:59Z 仍是当天，16:00:00Z 已经是下一天。
+  assert.equal(dailyDateKey(new Date('2026-10-22T15:59:59.000Z')), '2026-10-22');
+  assert.equal(dailyDateKey(new Date('2026-10-22T16:00:00.000Z')), '2026-10-23');
+  assert.equal(dailyDateKey(new Date('2025-12-31T15:59:59.000Z')), '2025-12-31');
+  assert.equal(dailyDateKey(new Date('2025-12-31T16:00:00.000Z')), '2026-01-01');
+  assert.equal(dailyDateKey(new Date('2026-10-23T00:30:00+08:00')), '2026-10-23');
+
+  const seed = dailySeed('2026-10-23');
+  assert.equal(dailySeed('2026-10-23'), seed);
+  assert.equal(dailySeed(dailyDateKey(new Date('2026-10-22T16:00:00.000Z'))), seed);
+  assert.notEqual(dailySeed('2026-10-22'), seed);
+  assert.notEqual(dailySeed('2026-10-24'), seed);
+  assert.equal(dailyHoleSeed('2026-10-23', 0), hashSeed(seed, 'hole', 0) || 1);
+
+  const deal = (key) => {
+    const hole = R.createHole({ seed: dailyHoleSeed(key, 0), numPlayers: 2 });
+    return {
+      grids: hole.players.map((p) => p.grid.map((g) => g.card.id)),
+      deck: hole.deck.map((c) => c.id),
+      discard: hole.discard.map((c) => c.id),
+    };
+  };
+  assert.deepEqual(deal('2026-10-23'), deal('2026-10-23'));
+  assert.notDeepEqual(deal('2026-10-23'), deal('2026-10-24'));
+
+  const seen = new Set();
+  let day = '2026-01-01';
+  for (let i = 0; i < 400; i++) {
+    seen.add(dailySeed(day));
+    day = addDays(day, 1);
+  }
+  assert.equal(seen.size, 400);
+  assert.equal(addDays('2026-10-31', 1), '2026-11-01');
+  assert.equal(addDays('2026-01-01', -1), '2025-12-31');
+});
+
+test('daily streak: missed day resets, same-day replay does not double count', () => {
+  let history = {};
+  let r = applyDailyResult(history, '2026-10-20', { score: 10, seed: 1 });
+  history = r.history;
+  assert.equal(r.recorded, true);
+  assert.equal(r.streak.current, 1);
+  assert.equal(r.streak.best, 1);
+  assert.equal(r.streak.playedToday, true);
+
+  r = applyDailyResult(history, '2026-10-21', { score: 8, seed: 2 });
+  history = r.history;
+  assert.equal(r.streak.current, 2);
+  assert.equal(r.streak.best, 2);
+
+  r = applyDailyResult(history, '2026-10-21', { score: 1, seed: 2 });
+  assert.equal(r.recorded, false);
+  assert.equal(r.history['2026-10-21'].score, 8);
+  assert.equal(r.streak.current, 2);
+  assert.equal(r.streak.best, 2);
+  r = applyDailyResult(history, '2026-10-21', { score: 1, seed: 2 }, { practice: true });
+  assert.equal(r.recorded, false);
+  assert.equal(r.history['2026-10-21'].score, 8);
+  assert.equal(r.streak.current, 2);
+
+  // 今天还没打，但昨天打了：连续天数先保持。
+  assert.deepEqual(computeStreak(history, '2026-10-22'), { current: 2, best: 2, playedToday: false });
+  // 空过 10/22 之后，10/23 开局前连续天数归零，最佳连续还在。
+  assert.deepEqual(computeStreak(history, '2026-10-23'), { current: 0, best: 2, playedToday: false });
+
+  r = applyDailyResult(history, '2026-10-23', { score: 4, seed: 3 });
+  history = r.history;
+  assert.equal(r.recorded, true);
+  assert.equal(r.streak.current, 1);
+  assert.equal(r.streak.best, 2);
+  assert.equal(history['2026-10-23'].score, 4);
+  r = applyDailyResult(history, '2026-10-23', { score: 0, seed: 3 });
+  assert.equal(r.recorded, false);
+  assert.equal(r.streak.current, 1);
+  assert.equal(r.history['2026-10-23'].score, 4);
+
+  history = applyDailyResult(history, '2026-10-31', { score: 5, seed: 4 }).history;
+  r = applyDailyResult(history, '2026-11-01', { score: 6, seed: 5 });
+  assert.equal(r.streak.current, 2);
+  assert.equal(r.streak.best, 2);
+  const replay = applyDailyResult(r.history, '2026-11-01', { score: 0, seed: 5 }, { practice: true });
+  assert.equal(replay.recorded, false);
+  assert.equal(replay.streak.current, 2);
+  assert.equal(replay.history['2026-11-01'].score, 6);
+});
+
+test('daily share text', () => {
+  assert.equal(
+    dailyShareText({ dateKey: '2026-10-23', score: 4, streak: 5, url: 'https://golf-card-game.app.imkyu.com/#c=abc' }),
+    '高尔夫纸牌 每日挑战 10/23 · 得分 4 · 连续 5 天 🔥\nhttps://golf-card-game.app.imkyu.com/#c=abc',
+  );
+  const ch = { v: 1, seed: dailySeed('2026-10-23'), level: -1, score: 4, name: '肯尼', avatar: '⛳', stars: 0, daily: '2026-10-23', streak: 5 };
+  assert.deepEqual(decodeChallenge(encodeChallenge(ch)), ch);
+});
+
+test('pair floater shows the cancelled points', () => {
+  const tens = newColumnPairs(grid([10, 1, 2, 3, 4, 5]), grid([10, 1, 2, 10, 4, 5]));
+  assert.equal(tens.pairs.length, 1);
+  assert.equal(tens.pairs[0].cancelled, 20);
+  assert.equal(pairFloaterLabel(tens.pairs[0].cancelled), '-20');
+
+  const twos = newColumnPairs(grid([2, 1, 3, 4, 5, 6]), grid([2, 1, 3, 2, 5, 6]));
+  assert.equal(twos.pairs[0].cancelled, -4);
+  assert.equal(pairFloaterLabel(twos.pairs[0].cancelled), '+4');
+  assert.equal(pairFloaterLabel(0), '');
+
+  const hidden = grid([8, 3, 1, 8, 4, 2]);
+  hidden[3].up = false;
+  const revealed = hidden.map((g) => ({ card: g.card, up: true }));
+  const flip = newColumnPairs(hidden, revealed);
+  assert.equal(flip.pairs.length, 1);
+  assert.equal(flip.pairs[0].cancelled, 16);
+  assert.equal(pairFloaterLabel(16), '-16');
+  assert.equal(newColumnPairs(revealed, revealed).pairs.length, 0);
+});
+
+test('result near-miss copy and personal best', () => {
+  const level = LEVELS[0];
+  const closeToStars = resultFeedback({ level, my: 8, won: true, bestOpponent: 10, previousBest: 14 });
+  assert.deepEqual(closeToStars.lines, ['再少 2 分就能拿 ⭐⭐⭐']);
+  assert.equal(closeToStars.personalBest, '新的个人最佳 8 分');
+
+  const closeToWin = resultFeedback({ level, my: 9, won: false, bestOpponent: 8, previousBest: 9 });
+  assert.deepEqual(closeToWin.lines, ['差 1 分就赢了']);
+  assert.equal(closeToWin.personalBest, '追平个人最佳 9 分');
+
+  const oneStar = resultFeedback({ level, my: 14, won: true, bestOpponent: 20, previousBest: 10 });
+  assert.deepEqual(oneStar.lines, ['再少 2 分就能拿 ⭐⭐']);
+  assert.equal(oneStar.personalBest, '个人最佳 10 分');
+  assert.equal(oneStar.improved, false);
 });

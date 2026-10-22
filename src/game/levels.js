@@ -24,7 +24,23 @@ export const LEVELS = [
 
 export const QUICK_LEVEL = { id: 0, name: '自由对局', desc: '两位普通对手，3 局', holes: 3, opponents: [{ ai: 1, level: 'normal' }, { ai: 2, level: 'normal' }], rules: {}, t2: 25, t3: 12 };
 
-export function getLevel(id) { return id === 0 ? QUICK_LEVEL : LEVELS.find((l) => l.id === id); }
+// 每日挑战是固定规则的一局，不占用闯关星级。id 用 -1，和自由对局的 0 分开。
+export const DAILY_LEVEL = {
+  id: -1,
+  daily: true,
+  name: '每日挑战',
+  desc: '北京时间每天一副牌，全世界相同，只记一次成绩',
+  holes: 1,
+  opponents: [{ ai: 1, level: 'normal' }],
+  rules: {},
+  t2: 12,
+  t3: 6,
+};
+
+export function getLevel(id) {
+  if (id === -1 || id === 'daily') return DAILY_LEVEL;
+  return id === 0 ? QUICK_LEVEL : LEVELS.find((l) => l.id === id);
+}
 
 export function starsFor(level, myTotal, won) {
   if (!won) return 0;

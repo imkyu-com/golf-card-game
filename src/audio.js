@@ -12,6 +12,13 @@ function ac() {
 }
 export function setSoundEnabled(v) { enabled = v; }
 export function isSoundEnabled() { return enabled; }
+// 音效开关同时管震动。视觉上的闪光和飘字不受影响。
+export function haptic(pattern = [12, 36, 18]) {
+  if (!enabled) return;
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') navigator.vibrate(pattern);
+  } catch { /* 桌面浏览器或不允许震动 */ }
+}
 export function unlockAudio() { if (enabled) ac(); }
 
 function tone(freq, dur, { type = 'sine', vol = 0.3, delay = 0, slide = 0 } = {}) {
@@ -44,7 +51,15 @@ export const sfx = {
   flip() { if (enabled) { noise(0.09, { freq: 3200, q: 0.8, vol: 0.35 }); tone(420, 0.05, { type: 'triangle', vol: 0.08, delay: 0.04 }); } },
   draw() { if (enabled) noise(0.18, { freq: 1500, q: 0.6, vol: 0.25 }); },
   place() { if (enabled) { noise(0.06, { freq: 700, q: 1.2, vol: 0.45 }); tone(140, 0.12, { vol: 0.25, slide: -60 }); } },
-  pair() { if (enabled) { tone(784, 0.12, { type: 'triangle', vol: 0.2 }); tone(1046, 0.18, { type: 'triangle', vol: 0.2, delay: 0.1 }); } },
+  pair() {
+    if (!enabled) return;
+    noise(0.07, { freq: 2100, q: 0.8, vol: 0.16 });
+    tone(523.25, 0.08, { type: 'triangle', vol: 0.16 });
+    tone(659.25, 0.09, { type: 'triangle', vol: 0.17, delay: 0.06 });
+    tone(783.99, 0.11, { type: 'triangle', vol: 0.18, delay: 0.12 });
+    tone(1046.5, 0.2, { type: 'sine', vol: 0.14, delay: 0.18 });
+    tone(1568, 0.14, { type: 'sine', vol: 0.05, delay: 0.2 });
+  },
   win() { if (enabled) [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.22, delay: i * 0.11 })); },
   lose() { if (enabled) [392, 330, 262].forEach((f, i) => tone(f, 0.3, { type: 'sine', vol: 0.2, delay: i * 0.16 })); },
   star(i = 0) { if (enabled) tone(880 + i * 220, 0.2, { type: 'triangle', vol: 0.2 }); },

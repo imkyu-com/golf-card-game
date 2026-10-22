@@ -23,7 +23,9 @@ npm run screenshots  # 无头 Chrome 冒烟测试 + 截图（需要先 preview�
 src/game/rng.js        带种子的随机数（mulberry32）和种子哈希
 src/game/rules.js      规则状态机（纯函数，不碰 DOM，以后可以直接拿去做服务端裁判）
 src/game/ai.js         AI：按“期望分”估值；分三档：easy 用阈值，normal 估期望值，hard 额外考虑摸牌期望、不给下家喂牌、只在领先时收尾
-src/game/levels.js     10 个关卡（对手数量、难度、局数、特殊规则、星级线）
+src/game/levels.js     10 个关卡（对手数量、难度、局数、特殊规则、星级线）和每日挑战关卡
+src/game/daily.js      每日挑战：北京时间日期、种子、连续天数（纯函数）
+src/game/feedback.js   新对子的抵消分数、结算页的差一点文案（纯函数）
 src/scene/scene3d.js   3D 牌桌、灯光阴影、声明式布局 + 补间动画、射线拾取
 src/scene/cardTextures.js  用 Canvas 程序化画牌面和牌背
 src/social/backend.js  数据层接口，原型阶段是 LocalBackend（localStorage）
@@ -42,17 +44,25 @@ scripts/screenshots.mjs 端到端截图脚本
 
 ## 社交（原型，无后端）
 - 昵称和头像存在 localStorage。
-- 挑战好友：链接格式是 `…/#c=<base64url(JSON{seed,level,score,name,avatar,stars})>`。好友打开链接，就拿到同一个 seed，每一局的发牌完全相同。好友的成绩会写进本机排行榜，标记为“好友挑战”。
+- 挑战好友：链接格式是 `…/#c=<base64url(JSON{seed,level,score,name,avatar,stars})>`。好友打开链接，就拿到同一个 seed，每一局的发牌完全相同。好友的成绩会写进本机排行榜，标记为“好友挑战”。每日挑战的分享也用这条链接，多两个字段：`daily`（`YYYY-MM-DD`）和 `streak`。`level: -1` 表示每日挑战。
 - 战绩卡：Canvas 生成 1080×1350 的 PNG，可以下载；也可以复制战绩文字。支持系统分享的设备上，可以调用 `navigator.share`。
+- 凑成新的一列对子时会有短反馈：合成音、两张牌闪光和粒子、抵消的分数飞向计分（一对 10 是 `-20`），以及很轻的镜头晃动。手机上如果开着音效，还会 `navigator.vibrate`。音效按钮关掉时，声音、晃动和震动一起停，闪光和飘字还在。这些都不插入等待，回合速度不变。
+
+## 每日挑战
+- 换日用 **Asia/Shanghai（北京时间）**，不用浏览器本地时区。所有人在北京时间 0 点同时换到新的一副牌。
+- 种子是 `hashSeed('daily', 'YYYY-MM-DD')`。第 1 局的发牌种子和普通对局一样，是 `hashSeed(每日种子, 'hole', 0)`。
+- 每天第一次打完才记分，并计入连续天数。同一天再开是练习：不改分数，也不把这一天算两次。中间空过一天，当前连续归零，最佳连续保留。还没打的当天，如果昨天打过，连续天数先保持。
+- 首页在今天还没记分时，每日挑战按钮上有「未完成」。
+- 全球每日排行榜还没有服务器。`LocalBackend.submitDailyScore()` 固定返回 `{ submitted: false, reason: 'local-only' }`，`getDailyLeaderboard()` 返回 `{ available: false, entries: [] }`。以后的 `RemoteBackend` 覆盖这两个方法即可；服务端用 `dailySeed(date)` 重放 `rules.js` 校验。
 
 ## 以后接入真实后端
-1. **全球排行榜和账号**：按 `LocalBackend` 的同一套接口写 `RemoteBackend`（getProfile/saveProfile/saveLevelResult/submitScore/getLeaderboard/recordChallenge），然后在 `main.js` 里替换。服务端可以用 seed 和操作序列回放 `rules.js`，以此校验成绩、防作弊。
+1. **全球排行榜和账号**：按 `LocalBackend` 的同一套接口写 `RemoteBackend`（getProfile/saveProfile/saveLevelResult/submitScore/getLeaderboard/recordChallenge/getDailyState/recordDailyResult/submitDailyScore/getDailyLeaderboard），然后在 `main.js` 里替换。服务端可以用 seed 和操作序列回放 `rules.js`，以此校验成绩、防作弊。每日榜走 `submitDailyScore` / `getDailyLeaderboard`。
 2. **挑战链接**：现在把数据直接编码进 URL。以后可以改成服务端生成短 ID（`/c/AbC123`），还能统计有多少人应战。
 3. **在线对战**：`rules.js` 是纯状态机，所有操作都是 `drawFromDeck / takeDiscard / returnDiscard / swapHeld / discardHeld / flipAfterDiscard`，可以直接放到 WebSocket 服务端做权威裁判。客户端只发操作，收到状态后调用 `scene.layout(state)`（声明式渲染，任何状态都能直接画出来）。`main.js` 里的 `humanTurn / aiTurn` 可以再抽象出一个 `RemotePlayer`，等待网络消息。
 4. 注意：开局时 AI 也用 seed 派生的随机数，但它的决策会受人类操作影响，所以挑战模式能保证**发牌相同**，不保证 AI 的每一步都相同。
 
 ## 已知问题和限制
-- 手机竖屏下牌比较小，还没有“点击放大自己手牌”的交互。
+- 手机竖屏下自己的 6 张牌已经放大，方便点按；对手的牌更小。
 - 发牌和翻牌动画没有设置“快进”或速度选项；AI 每回合大约 1.5 秒。
 - 没有完整的手机实机测试，只在无头 Chrome 里模拟了 390×844 触屏视口。
 - 打包后的 three.js 约 520KB（gzip 后约 140KB），还没做代码分割。

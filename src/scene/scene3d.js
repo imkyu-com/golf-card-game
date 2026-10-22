@@ -78,6 +78,8 @@ export class TableScene {
     this.highlight = { deck: false, discard: false, slots: new Set() };
     this.hover = null;
     this.paired = new Set();
+    this.sparks = [];
+    this._prevNow = 0;
     this.onPick = null;
     this.clock = new THREE.Clock();
     this.raycaster = new THREE.Raycaster();
@@ -172,6 +174,7 @@ export class TableScene {
     this.discardPad.visible = false;
     this.discardPad.raycast = () => {};
     s.add(this.discardPad);
+    this._sparkGeo = new THREE.IcosahedronGeometry(0.09, 0);
     this._zeroBadgeGeo = new THREE.PlaneGeometry(0.42, 0.2);
     this._zeroBadgeMat = new THREE.MeshBasicMaterial({
       map: zeroBadgeTexture(),
@@ -358,6 +361,15 @@ export class TableScene {
     }
     this.cards.clear();
     this.paired.clear();
+    this._clearSparks();
+  }
+
+  _clearSparks() {
+    for (const sp of this.sparks) {
+      this.scene.remove(sp.m);
+      sp.m.material.dispose();
+    }
+    this.sparks = [];
   }
 
   _makeCard(card, rules) {
@@ -462,6 +474,22 @@ export class TableScene {
 
   _tick() {
     const now = this.clock.getElapsedTime();
+    const dt = Math.min(0.05, Math.max(0, now - (this._prevNow || now)));
+    this._prevNow = now;
+    for (let i = this.sparks.length - 1; i >= 0; i--) {
+      const sp = this.sparks[i];
+      sp.age += dt;
+      sp.v.y -= 3.2 * dt;
+      sp.m.position.addScaledVector(sp.v, dt);
+      const k = Math.max(0, 1 - sp.age / sp.life);
+      sp.m.material.opacity = k;
+      sp.m.scale.setScalar(0.4 + k);
+      if (sp.age >= sp.life) {
+        this.scene.remove(sp.m);
+        sp.m.material.dispose();
+        this.sparks.splice(i, 1);
+      }
+    }
     for (const e of this.cards.values()) {
       const tw = e.tween;
       if (!tw) continue;
@@ -488,9 +516,26 @@ export class TableScene {
         if (this.highlight.discard && st.discard.length && st.discard[st.discard.length - 1].id === id) on = 1;
         if (this.highlight.slots.size && st.players[0].grid.some((g, i) => g.card.id === id && this.highlight.slots.has(i))) on = 1;
       }
-      if (this.paired.has(e.card.id)) { on = 1; color = '#52b788'; }
-      const hov = this.hover === e.card.id && on && color !== '#52b788';
-      const intensity = on ? (hov ? 0.7 : pulse) : 0;
+      const juice = e.juiceUntil > now;
+      if (e.juiceUntil && !juice) {
+        e.juiceUntil = 0;
+        if (!e.tween && e.target) e.group.scale.setScalar(e.target.scale ?? 1);
+      }
+      let intensity = 0;
+      if (juice) {
+        on = 1;
+        color = '#ffe08a';
+        const k = (e.juiceUntil - now) / 0.72;
+        intensity = (0.75 + 0.5 * Math.abs(Math.sin(now * 30))) * (0.4 + 0.6 * k);
+        if (!e.tween) {
+          const base = e.target?.scale ?? 1;
+          e.group.scale.setScalar(base * (1 + 0.08 * Math.sin(now * 26) * k));
+        }
+      } else if (this.paired.has(e.card.id)) { on = 1; color = '#52b788'; }
+      if (!juice) {
+        const hov = this.hover === e.card.id && on && color !== '#52b788';
+        intensity = on ? (hov ? 0.7 : pulse) : 0;
+      }
       for (const m of [e.front.material, e.back.material]) {
         if (m.emissiveIntensity !== intensity || on) { m.emissive.set(on ? color : '#000000'); m.emissiveIntensity = intensity; }
       }
@@ -545,6 +590,49 @@ export class TableScene {
     }
   }
   shake(amount = 0.25) { this.cameraShake = amount; }
+
+  cardScreenPos(id) {
+    const e = this.cards.get(id);
+    if (!e) return null;
+    const v = e.group.position.clone();
+    v.y += 0.35;
+    return this._projectPx(v);
+  }
+
+  // 两张牌上的短闪光和粒子。不改牌的目标位置，动画自己在下一帧里结束。
+  celebrateCards(ids) {
+    const now = this.clock.getElapsedTime();
+    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    for (const id of ids) {
+      const e = this.cards.get(id);
+      if (!e) continue;
+      e.juiceUntil = now + 0.72;
+      if (!reduced) this._burst(e.group.position);
+    }
+  }
+
+  _burst(origin) {
+    const colors = [0xffd166, 0xfff6d8, 0x7ee787, 0xffffff, 0xb6f5c8];
+    for (let i = 0; i < 12; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colors[i % colors.length],
+        transparent: true,
+        opacity: 1,
+        depthWrite: false,
+      });
+      const m = new THREE.Mesh(this._sparkGeo, mat);
+      m.position.set(origin.x, origin.y + 0.18, origin.z);
+      const ang = (i / 12) * Math.PI * 2 + Math.random() * 0.35;
+      const speed = 1.1 + Math.random() * 1.4;
+      this.sparks.push({
+        m,
+        v: new THREE.Vector3(Math.cos(ang) * speed, 1.2 + Math.random() * 1.5, Math.sin(ang) * speed * 0.65),
+        life: 0.62,
+        age: 0,
+      });
+      this.scene.add(m);
+    }
+  }
 
   // ---------- 输入 ----------
   _pickAt(clientX, clientY) {
